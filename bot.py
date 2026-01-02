@@ -1,13 +1,27 @@
 import os
 import io
 import asyncio
-import ast
 import urllib.parse
+import logging
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler, 
+    ContextTypes, 
+    CallbackQueryHandler,
+    MessageHandler,
+    filters
+)
 from supabase import create_client
+
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -16,44 +30,15 @@ ADMIN_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN not found!")
+
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- Command handlers ---
-async def all_pending_applicants(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all applicants whose payment is pending"""
-    data = supabase.table("applications")\
-        .select("alias_email, first_name, last_name, whatsapp")\
-        .eq("payment", "pending")\
-        .execute()
-    users = data.data if data.data else []
-    if not users:
-        await update.message.reply_text("No pending users found.")
-        return
-    message = "\n".join([f"{u['first_name']} {u['last_name']} - {u['alias_email']} - {u['whatsapp']}" for u in users])
-    await update.message.reply_text(f"Pending applicants:\n{message}")
+# Store user state
+user_states = {}
 
-
-async def all_done_applicants(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all applicants whose payment is done"""
-    data = supabase.table("applications").select("alias_email, first_name, last_name, whatsapp").eq("payment", "done").execute()
-    applicants = data.data or []
-    if not applicants:
-        await update.message.reply_text("No applicants with done payment found.")
-        return
-    message = "\n".join([f"{a['first_name']} {a['last_name']} - {a['alias_email']} - {a['whatsapp']}" for a in applicants])
-    await update.message.reply_text(f"Done applicants:\n{message}")
-
-
-async def all_archived_applicants(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all archived applicants"""
-    data = supabase.table("applications_archive").select("alias_email, first_name, last_name, whatsapp").execute()
-    applicants = data.data or []
-    if not applicants:
-        await update.message.reply_text("No archived applicants found.")
-        return
-    message = "\n".join([f"{a['first_name']} {a['last_name']} - {a['alias_email']} - {a['whatsapp']}" for a in applicants])
-    await update.message.reply_text(f"Archived applicants:\n{message}")
-
+# ==================== UTILITY FUNCTIONS ====================
 
 def chunk_text(text: str, chunk_size: int = 4000):
     """Split text into Telegram-safe chunks"""
@@ -63,243 +48,643 @@ def chunk_text(text: str, chunk_size: int = 4000):
 async def send_file_from_storage(update: Update, file_url: str, bucket: str, caption: str):
     """Download file from Supabase Storage and send to Telegram"""
     if not file_url:
-        await update.message.reply_text(f"No {caption} provided.")
         return
 
     try:
-        # Extract just the file name
-        import urllib.parse
         path = urllib.parse.urlparse(file_url).path.split('/')[-1]
-
-        # Download file in a thread to avoid blocking
         file_bytes = await asyncio.to_thread(lambda: supabase.storage.from_(bucket).download(path))
-
         file_obj = io.BytesIO(file_bytes)
-        file_obj.name = path  # Telegram requires a name for files
-
-        await update.message.reply_document(document=file_obj, caption=caption)
+        file_obj.name = path
+        
+        if update.callback_query:
+            await update.callback_query.message.reply_document(document=file_obj, caption=caption)
+        else:
+            await update.message.reply_document(document=file_obj, caption=caption)
     except Exception as e:
-        await update.message.reply_text(f"Failed to download {caption}: {e}")
+        logger.error(f"Error sending file: {e}")
 
 
-# ------------------ Main Function ------------------
-async def find_applicant(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show full details of a specific applicant with attached files"""
-    if not context.args:
-        await update.message.reply_text("Usage: /find_applicant <alias_email>")
-        return
+# ==================== MAIN MENU ====================
 
-    alias_email = context.args[0]
-
-    # Fetch applicant from main and archive tables
-    data_main = supabase.table("applications").select("*").eq("alias_email", alias_email).execute()
-    data_archive = supabase.table("applications_archive").select("*").eq("alias_email", alias_email).execute()
-    applicant = (data_main.data or []) + (data_archive.data or [])
-
-    if not applicant:
-        await update.message.reply_text(f"No applicant found with alias_email: {alias_email}")
-        return
-
-    a = applicant[0]
-
-    # ------------------ Send files ------------------
-    await send_file_from_storage(update, a.get("picture_url"), "pictures", "Profile Picture")
-    await send_file_from_storage(update, a.get("cv_url"), "cv", "CV")
-
-    # Recommendation letters
-    letters_urls = a.get("recommendation_url", [])
-    if isinstance(letters_urls, str):
-        try:
-            letters_urls = ast.literal_eval(letters_urls)
-        except Exception:
-            letters_urls = []
-
-    for i, letter_url in enumerate(letters_urls, start=1):
-        if letter_url:
-            await send_file_from_storage(update, letter_url, "letters", f"Recommendation Letter {i}")
-
-    # ------------------ Prepare text sections ------------------
-    sections = []
-
-    # Personal Info
-    personal_fields = ["first_name", "last_name", "email", "alias_email", "whatsapp", "linkedin", "twitter", "website"]
-    personal_info = "\n".join([f"{f.replace('_', ' ').title()}: {a.get(f, '-')}" for f in personal_fields])
-    sections.append(f"📌 Personal Info:\n{personal_info}")
-
-    # Address Info
-    address_fields = ["street", "building", "apartment", "city", "zip", "residency_country"]
-    address_info = "\n".join([f"{f.replace('_', ' ').title()}: {a.get(f, '-')}" for f in address_fields])
-    sections.append(f"🏠 Address Info:\n{address_info}")
-
-    # Work Experience
-    roles = a.get("roles", [])
-    if roles:
-        msg = "💼 Work Experience:\n"
-        for r in roles:
-            msg += f"- {r.get('title', '-')}, {r.get('company', '-')}, {r.get('location', '-')}\n"
-            msg += f"  {r.get('start', '-')}-{r.get('end', '-')}, Current: {r.get('current', False)}\n"
-            msg += f"  Description: {r.get('description', '-')}\n"
-        sections.append(msg)
-
-    # Education
-    education = a.get("education", [])
-    if education:
-        msg = "🎓 Education:\n"
-        for e in education:
-            msg += f"- {e.get('school', '-')}, {e.get('degree', '-')}, {e.get('field', '-')}, {e.get('start', '-')}-{e.get('end', '-')}\n"
-        sections.append(msg)
-
-    # Certificates
-    certificates = a.get("certificates", [])
-    if certificates:
-        msg = "📜 Certificates:\n"
-        for c in certificates:
-            msg += f"- {c.get('name', '-')}, Number: {c.get('number', '-')}, {c.get('start', '-')}-{c.get('end', '-')}\n"
-        sections.append(msg)
-
-    # Languages
-    languages = a.get("languages", [])
-    if languages:
-        msg = "🗣 Languages:\n"
-        for l in languages:
-            msg += f"- {l.get('language', '-')}: {l.get('proficiency', '-')}\n"
-        sections.append(msg)
-
-    # Skills & Other Info
-    skills = ", ".join(a.get("skills", [])) or "-"
-
-    # Country Preference
-    country_pref_raw = a.get("country_preference", [])
-    if isinstance(country_pref_raw, str):
-        try:
-            country_pref_list = ast.literal_eval(country_pref_raw)
-        except Exception:
-            country_pref_list = []
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Display main menu"""
+    keyboard = [
+        [InlineKeyboardButton("📋 View Applicants", callback_data="view")],
+        [InlineKeyboardButton("💰 Payment Management", callback_data="payment")],
+        [InlineKeyboardButton("📅 Subscription Management", callback_data="subscription")],
+        [InlineKeyboardButton("🗄️ Archive Management", callback_data="archive")],
+        [InlineKeyboardButton("🔍 Find Applicant", callback_data="find")],
+        [InlineKeyboardButton("📊 Statistics", callback_data="stats")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    message_text = "🤖 *Applicant Management Bot*\n\nSelect an option:"
+    
+    if update.callback_query:
+        await update.callback_query.message.edit_text(
+            text=message_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
     else:
-        country_pref_list = country_pref_raw
-    country_pref = ", ".join(country_pref_list) or "-"
+        await update.message.reply_text(
+            text=message_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
 
-    payment = a.get("payment", "-")
-    subscription = a.get("subscription_expiration", "-")
 
-    msg = f"⚡ Skills: {skills}\n🌍 Country Preference: {country_pref}\n💳 Payment: {payment}\n📅 Subscription Expiration: {subscription}"
-    sections.append(msg)
+# ==================== CALLBACK HANDLER ====================
 
-    # ------------------ Send all sections safely ------------------
-    for section in sections:
-        for chunk in chunk_text(section):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle all button callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    user_id = query.from_user.id
+    
+    logger.info(f"Callback: {data} from user {user_id}")
+    
+    # Main menu navigation
+    if data == "back":
+        await start(update, context)
+        return
+    
+    # ==================== VIEW SUBMENU ====================
+    elif data == "view":
+        keyboard = [
+            [InlineKeyboardButton("⏳ Pending Applicants", callback_data="view_pending")],
+            [InlineKeyboardButton("✅ Done Applicants", callback_data="view_done")],
+            [InlineKeyboardButton("📦 Archived Applicants", callback_data="view_archived")],
+            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back")]
+        ]
+        await query.message.edit_text(
+            "📋 *View Applicants*\n\nSelect a category:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    elif data == "view_pending":
+        try:
+            result = await asyncio.to_thread(
+                lambda: supabase.table("applications")
+                .select("alias_email, first_name, last_name, whatsapp")
+                .eq("payment", "pending")
+                .execute()
+            )
+            users = result.data if result.data else []
+            
+            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="view")]]
+            
+            if not users:
+                await query.message.edit_text(
+                    "⏳ *Pending Applicants*\n\nNo pending applicants found.",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode='Markdown'
+                )
+            else:
+                message = "⏳ *Pending Applicants:*\n\n" + "\n".join(
+                    [f"• {u['first_name']} {u['last_name']}\n  📧 `{u['alias_email']}`\n  📱 {u.get('whatsapp', 'N/A')}\n" 
+                     for u in users]
+                )
+                await query.message.edit_text(
+                    message,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode='Markdown'
+                )
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            await query.message.edit_text(
+                f"❌ Error: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="view")]])
+            )
+    
+    elif data == "view_done":
+        try:
+            result = await asyncio.to_thread(
+                lambda: supabase.table("applications")
+                .select("alias_email, first_name, last_name, whatsapp")
+                .eq("payment", "done")
+                .execute()
+            )
+            users = result.data if result.data else []
+            
+            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="view")]]
+            
+            if not users:
+                await query.message.edit_text(
+                    "✅ *Done Applicants*\n\nNo done applicants found.",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode='Markdown'
+                )
+            else:
+                message = "✅ *Done Applicants:*\n\n" + "\n".join(
+                    [f"• {u['first_name']} {u['last_name']}\n  📧 `{u['alias_email']}`\n  📱 {u.get('whatsapp', 'N/A')}\n" 
+                     for u in users]
+                )
+                await query.message.edit_text(
+                    message,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode='Markdown'
+                )
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            await query.message.edit_text(
+                f"❌ Error: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="view")]])
+            )
+    
+    elif data == "view_archived":
+        try:
+            result = await asyncio.to_thread(
+                lambda: supabase.table("applications_archive")
+                .select("alias_email, first_name, last_name, whatsapp")
+                .execute()
+            )
+            users = result.data if result.data else []
+            
+            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="view")]]
+            
+            if not users:
+                await query.message.edit_text(
+                    "📦 *Archived Applicants*\n\nNo archived applicants found.",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode='Markdown'
+                )
+            else:
+                message = "📦 *Archived Applicants:*\n\n" + "\n".join(
+                    [f"• {u['first_name']} {u['last_name']}\n  📧 `{u['alias_email']}`\n  📱 {u.get('whatsapp', 'N/A')}\n" 
+                     for u in users]
+                )
+                await query.message.edit_text(
+                    message,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode='Markdown'
+                )
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            await query.message.edit_text(
+                f"❌ Error: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="view")]])
+            )
+    
+    # ==================== PAYMENT SUBMENU ====================
+    elif data == "payment":
+        keyboard = [
+            [InlineKeyboardButton("✅ Mark as Done", callback_data="pay_done")],
+            [InlineKeyboardButton("⏳ Mark as Pending", callback_data="pay_pending")],
+            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back")]
+        ]
+        await query.message.edit_text(
+            "💰 *Payment Management*\n\nSelect an action:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    elif data == "pay_done":
+        user_states[user_id] = {"action": "mark_done"}
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="payment")]]
+        await query.message.edit_text(
+            "✅ *Mark Payment as Done*\n\nSend the applicant's alias email:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    elif data == "pay_pending":
+        user_states[user_id] = {"action": "mark_pending"}
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="payment")]]
+        await query.message.edit_text(
+            "⏳ *Mark Payment as Pending*\n\nSend the applicant's alias email:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    # ==================== SUBSCRIPTION SUBMENU ====================
+    elif data == "subscription":
+        keyboard = [
+            [InlineKeyboardButton("📅 Set Subscription Date", callback_data="sub_set")],
+            [InlineKeyboardButton("➕ Extend Subscription", callback_data="sub_extend")],
+            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back")]
+        ]
+        await query.message.edit_text(
+            "📅 *Subscription Management*\n\nSelect an action:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    elif data == "sub_set":
+        user_states[user_id] = {"action": "set_sub", "step": "email"}
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="subscription")]]
+        await query.message.edit_text(
+            "📅 *Set Subscription Date*\n\nSend the applicant's alias email:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    elif data == "sub_extend":
+        user_states[user_id] = {"action": "extend_sub", "step": "email"}
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="subscription")]]
+        await query.message.edit_text(
+            "➕ *Extend Subscription*\n\nSend the applicant's alias email:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    # ==================== ARCHIVE SUBMENU ====================
+    elif data == "archive":
+        keyboard = [
+            [InlineKeyboardButton("📦 Archive Applicant", callback_data="arch_archive")],
+            [InlineKeyboardButton("♻️ Restore Applicant", callback_data="arch_restore")],
+            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back")]
+        ]
+        await query.message.edit_text(
+            "🗄️ *Archive Management*\n\nSelect an action:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    elif data == "arch_archive":
+        user_states[user_id] = {"action": "archive"}
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="archive")]]
+        await query.message.edit_text(
+            "📦 *Archive Applicant*\n\nSend the applicant's alias email:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    elif data == "arch_restore":
+        user_states[user_id] = {"action": "restore"}
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="archive")]]
+        await query.message.edit_text(
+            "♻️ *Restore Applicant*\n\nSend the applicant's alias email:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    # ==================== FIND APPLICANT ====================
+    elif data == "find":
+        user_states[user_id] = {"action": "find"}
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="back")]]
+        await query.message.edit_text(
+            "🔍 *Find Applicant*\n\nSend the applicant's alias email:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    
+    # ==================== STATISTICS ====================
+    elif data == "stats":
+        try:
+            pending = await asyncio.to_thread(
+                lambda: supabase.table("applications")
+                .select("id", count="exact")
+                .eq("payment", "pending")
+                .execute().count
+            )
+            
+            done = await asyncio.to_thread(
+                lambda: supabase.table("applications")
+                .select("id", count="exact")
+                .eq("payment", "done")
+                .execute().count
+            )
+            
             try:
-                await update.message.reply_text(chunk)
-            except Exception as e:
-                # Prevent bot from crashing if Telegram times out
-                print(f"Failed to send section: {e}")
-async def mark_payment_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mark an applicant's payment as done"""
-    if not context.args:
-        await update.message.reply_text("Usage: /mark_payment_done <alias_email>")
+                archived = await asyncio.to_thread(
+                    lambda: supabase.table("applications_archive")
+                    .select("id", count="exact")
+                    .execute().count
+                )
+            except:
+                archived = 0
+            
+            total = pending + done
+            
+            keyboard = [[InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back")]]
+            await query.message.edit_text(
+                f"📊 *Statistics*\n\n"
+                f"⏳ Pending: {pending}\n"
+                f"✅ Done: {done}\n"
+                f"📦 Archived: {archived}\n"
+                f"➖➖➖➖➖➖➖\n"
+                f"📈 Total Active: {total}",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            await query.message.edit_text(
+                f"❌ Error: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back")]])
+            )
+
+
+# ==================== TEXT INPUT HANDLER ====================
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text input for multi-step operations"""
+    user_id = update.message.from_user.id
+    text = update.message.text.strip()
+    
+    if user_id not in user_states:
         return
-    alias_email = context.args[0]
-    supabase.table("applications").update({"payment": "done"}).eq("alias_email", alias_email).execute()
-    await update.message.reply_text(f"Payment marked as done for {alias_email}")
+    
+    state = user_states[user_id]
+    action = state.get("action")
+    
+    keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="back")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Find applicant
+    if action == "find":
+        await find_applicant_details(update, text)
+        del user_states[user_id]
+    
+    # Mark payment done
+    elif action == "mark_done":
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.table("applications")
+                .update({"payment": "done"})
+                .eq("alias_email", text)
+                .execute()
+            )
+            await update.message.reply_text(
+                f"✅ Payment marked as *done* for:\n`{text}`",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=reply_markup)
+        del user_states[user_id]
+    
+    # Mark payment pending
+    elif action == "mark_pending":
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.table("applications")
+                .update({"payment": "pending"})
+                .eq("alias_email", text)
+                .execute()
+            )
+            await update.message.reply_text(
+                f"⏳ Payment marked as *pending* for:\n`{text}`",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=reply_markup)
+        del user_states[user_id]
+    
+    # Set subscription - email step
+    elif action == "set_sub" and state.get("step") == "email":
+        user_states[user_id] = {"action": "set_sub", "step": "date", "email": text}
+        await update.message.reply_text(
+            f"📅 Email: `{text}`\n\nNow send the subscription expiration date (YYYY-MM-DD):",
+            parse_mode='Markdown'
+        )
+    
+    # Set subscription - date step
+    elif action == "set_sub" and state.get("step") == "date":
+        email = state.get("email")
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.table("applications")
+                .update({"subscription_expiration": text})
+                .eq("alias_email", email)
+                .execute()
+            )
+            await update.message.reply_text(
+                f"✅ Subscription set for:\n`{email}`\nUntil: *{text}*",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=reply_markup)
+        del user_states[user_id]
+    
+    # Extend subscription - email step
+    elif action == "extend_sub" and state.get("step") == "email":
+        user_states[user_id] = {"action": "extend_sub", "step": "days", "email": text}
+        await update.message.reply_text(
+            f"➕ Email: `{text}`\n\nNow send the number of days to extend:",
+            parse_mode='Markdown'
+        )
+    
+    # Extend subscription - days step
+    elif action == "extend_sub" and state.get("step") == "days":
+        email = state.get("email")
+        try:
+            days = int(text)
+            result = await asyncio.to_thread(
+                lambda: supabase.table("applications")
+                .select("subscription_expiration")
+                .eq("alias_email", email)
+                .execute()
+            )
+            
+            if not result.data:
+                await update.message.reply_text(
+                    f"❌ No applicant found with email:\n`{email}`", 
+                    reply_markup=reply_markup, 
+                    parse_mode='Markdown'
+                )
+            else:
+                current_exp = datetime.strptime(result.data[0]["subscription_expiration"], "%Y-%m-%d")
+                new_exp = (current_exp + timedelta(days=days)).date()
+                
+                await asyncio.to_thread(
+                    lambda: supabase.table("applications")
+                    .update({"subscription_expiration": new_exp.isoformat()})
+                    .eq("alias_email", email)
+                    .execute()
+                )
+                
+                await update.message.reply_text(
+                    f"✅ Subscription extended for:\n`{email}`\nNew expiration: *{new_exp}*\n(+{days} days)",
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Invalid number. Please send a valid number of days.", 
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=reply_markup)
+        del user_states[user_id]
+    
+    # Archive
+    elif action == "archive":
+        try:
+            result = await asyncio.to_thread(
+                lambda: supabase.table("applications")
+                .select("*")
+                .eq("alias_email", text)
+                .execute()
+            )
+            
+            if not result.data:
+                await update.message.reply_text(
+                    f"❌ No applicant found with email:\n`{text}`", 
+                    reply_markup=reply_markup, 
+                    parse_mode='Markdown'
+                )
+            else:
+                await asyncio.to_thread(
+                    lambda: supabase.table("applications_archive")
+                    .insert(result.data)
+                    .execute()
+                )
+                await asyncio.to_thread(
+                    lambda: supabase.table("applications")
+                    .delete()
+                    .eq("alias_email", text)
+                    .execute()
+                )
+                await update.message.reply_text(
+                    f"✅ Applicant archived:\n`{text}`",
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=reply_markup)
+        del user_states[user_id]
+    
+    # Restore
+    elif action == "restore":
+        try:
+            result = await asyncio.to_thread(
+                lambda: supabase.table("applications_archive")
+                .select("*")
+                .eq("alias_email", text)
+                .execute()
+            )
+            
+            if not result.data:
+                await update.message.reply_text(
+                    f"❌ No archived applicant found with email:\n`{text}`", 
+                    reply_markup=reply_markup, 
+                    parse_mode='Markdown'
+                )
+            else:
+                await asyncio.to_thread(
+                    lambda: supabase.table("applications")
+                    .insert(result.data)
+                    .execute()
+                )
+                await asyncio.to_thread(
+                    lambda: supabase.table("applications_archive")
+                    .delete()
+                    .eq("alias_email", text)
+                    .execute()
+                )
+                await update.message.reply_text(
+                    f"✅ Applicant restored:\n`{text}`",
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=reply_markup)
+        del user_states[user_id]
 
 
-async def mark_payment_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Revert an applicant's payment to pending"""
-    if not context.args:
-        await update.message.reply_text("Usage: /mark_payment_pending <alias_email>")
-        return
-    alias_email = context.args[0]
-    supabase.table("applications").update({"payment": "pending"}).eq("alias_email", alias_email).execute()
-    await update.message.reply_text(f"Payment marked as pending for {alias_email}")
+# ==================== FIND APPLICANT DETAILS ====================
+
+async def find_applicant_details(update: Update, alias_email: str):
+    """Show full applicant details"""
+    try:
+        result_main = await asyncio.to_thread(
+            lambda: supabase.table("applications")
+            .select("*")
+            .eq("alias_email", alias_email)
+            .execute()
+        )
+        result_archive = await asyncio.to_thread(
+            lambda: supabase.table("applications_archive")
+            .select("*")
+            .eq("alias_email", alias_email)
+            .execute()
+        )
+        
+        applicant = (result_main.data or []) + (result_archive.data or [])
+        
+        keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if not applicant:
+            await update.message.reply_text(
+                f"❌ No applicant found with email:\n`{alias_email}`",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+            return
+        
+        a = applicant[0]
+        
+        # Header
+        await update.message.reply_text(
+            f"🚨 *APPLICANT DETAILS*\n\n"
+            f"👤 {a.get('first_name', '-')} {a.get('last_name', '-')}\n"
+            f"📧 `{a.get('alias_email', '-')}`",
+            parse_mode='Markdown'
+        )
+        
+        # CV
+        await send_file_from_storage(update, a.get("cv_url"), "cv", "📄 CV")
+        
+        # Contact info
+        await update.message.reply_text(
+            f"📞 *Contact Information*\n\n"
+            f"Name: {a.get('first_name','-')} {a.get('last_name','-')}\n"
+            f"Email: {a.get('email','-')}\n"
+            f"WhatsApp: {a.get('whatsapp','-')}\n"
+            f"LinkedIn: {a.get('linkedin','-')}",
+            parse_mode='Markdown'
+        )
+        
+        # Compensation
+        await update.message.reply_text(
+            f"💰 *Compensation Details*\n\n"
+            f"Expected Salary: {a.get('expected_salary_currency','-')} {a.get('expected_salary','-')}\n"
+            f"Current Salary: {a.get('expected_salary_currency','-')} {a.get('current_salary','-')}\n"
+            f"Payment Status: {a.get('payment','-')}",
+            parse_mode='Markdown'
+        )
+        
+        # Profile picture
+        await send_file_from_storage(update, a.get("picture_url"), "pictures", "📸 Profile Picture")
+        
+        await update.message.reply_text("✅ All details sent!", reply_markup=reply_markup)
+        
+    except Exception as e:
+        logger.error(f"Error finding applicant: {e}")
+        keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="back")]]
+        await update.message.reply_text(
+            f"❌ Error: {str(e)}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 
-async def set_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set subscription expiration date"""
-    if len(context.args) < 2:
-        await update.message.reply_text("Usage: /set_subscription <alias_email> <YYYY-MM-DD>")
-        return
-    alias_email, date_str = context.args[0], context.args[1]
-    supabase.table("applications").update({"subscription_expiration": date_str}).eq("alias_email", alias_email).execute()
-    await update.message.reply_text(f"Subscription set for {alias_email} until {date_str}")
+# ==================== MAIN ====================
+
+def main():
+    print("=" * 50)
+    print("🤖 STARTING BOT")
+    print("=" * 50)
+    
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Add handlers - ORDER MATTERS!
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    
+    print("✅ Bot started!")
+    print("📱 Send /start to use the menu")
+    
+    application.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 
-async def extend_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Extend subscription by N days"""
-    if len(context.args) < 2:
-        await update.message.reply_text("Usage: /extend_subscription <alias_email> <days>")
-        return
-    alias_email, days = context.args[0], int(context.args[1])
-    data = supabase.table("applications").select("subscription_expiration").eq("alias_email", alias_email).execute()
-    if not data.data:
-        await update.message.reply_text(f"No applicant found with alias_email: {alias_email}")
-        return
-    current_exp = datetime.strptime(data.data[0]["subscription_expiration"], "%Y-%m-%d")
-    new_exp = (current_exp + timedelta(days=days)).date()
-    supabase.table("applications").update({"subscription_expiration": new_exp.isoformat()}).eq("alias_email", alias_email).execute()
-    await update.message.reply_text(f"Subscription extended for {alias_email} until {new_exp}")
-
-
-async def archive_applicant(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Move an applicant to archive table"""
-    if not context.args:
-        await update.message.reply_text("Usage: /archive_applicant <alias_email>")
-        return
-    alias_email = context.args[0]
-    data = supabase.table("applications").select("*").eq("alias_email", alias_email).execute()
-    if not data.data:
-        await update.message.reply_text(f"No applicant found with alias_email: {alias_email}")
-        return
-    supabase.table("applications_archive").insert(data.data).execute()
-    supabase.table("applications").delete().eq("alias_email", alias_email).execute()
-    await update.message.reply_text(f"Applicant {alias_email} archived successfully")
-
-
-async def restore_applicant(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Restore an archived applicant"""
-    if not context.args:
-        await update.message.reply_text("Usage: /restore_applicant <alias_email>")
-        return
-    alias_email = context.args[0]
-    data = supabase.table("applications_archive").select("*").eq("alias_email", alias_email).execute()
-    if not data.data:
-        await update.message.reply_text(f"No archived applicant found with alias_email: {alias_email}")
-        return
-    supabase.table("applications").insert(data.data).execute()
-    supabase.table("applications_archive").delete().eq("alias_email", alias_email).execute()
-    await update.message.reply_text(f"Applicant {alias_email} restored successfully")
-
-
-async def applicant_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show counts of pending, done, and archived applicants"""
-    pending = supabase.table("applications").select("id", count="exact").eq("payment", "pending").execute().count
-    done = supabase.table("applications").select("id", count="exact").eq("payment", "done").execute().count
-    archived = supabase.table("applications_archive").select("id", count="exact").execute().count
-    await update.message.reply_text(f"Applicant stats:\nPending: {pending}\nDone: {done}\nArchived: {archived}")
-
-
-async def main():
-    await app.start()
-    print("Bot started...")
-    await app.updater.start_polling()
-    await asyncio.Event().wait()  # Keep the bot running
-
-# -------------------- Main --------------------
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    
-    # Command Handlers
-    app.add_handler(CommandHandler("all_pending_applicants", all_pending_applicants))
-    app.add_handler(CommandHandler("all_done_applicants", all_done_applicants))
-    app.add_handler(CommandHandler("all_archived_applicants", all_archived_applicants))
-    app.add_handler(CommandHandler("find_applicant", find_applicant))
-    app.add_handler(CommandHandler("mark_payment_done", mark_payment_done))
-    app.add_handler(CommandHandler("mark_payment_pending", mark_payment_pending))
-    app.add_handler(CommandHandler("set_subscription", set_subscription))
-    app.add_handler(CommandHandler("extend_subscription", extend_subscription))
-    app.add_handler(CommandHandler("archive_applicant", archive_applicant))
-    app.add_handler(CommandHandler("restore_applicant", restore_applicant))
-    app.add_handler(CommandHandler("applicant_stats", applicant_stats))
-    
-    print("Bot started. Waiting for commands...")
-    app.run_polling()
-    asyncio.run(main())
+    main()
