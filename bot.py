@@ -39,7 +39,77 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Store user state
 user_states = {}
 
-# ==================== UTILITY FUNCTIONS ====================
+# ==================== CONSTANTS ====================
+EDITABLE_FIELDS = {
+    "first_name": "First Name",
+    "last_name": "Last Name",
+    "email": "Personal Email",
+    "whatsapp": "WhatsApp",
+    "application_plan": "Application Plan",
+    "roles": "Roles",
+    "education": "Education",
+    "skills": "Skills",
+    "languages": "Languages",
+    "certificates": "Certificates",
+}
+
+APPLICATION_PLAN_OPTIONS = ["Casual", "Normal", "Intense"]
+
+LANGUAGE_PROFICIENCY_OPTIONS = [
+    "A0 Starter",
+    "A1 Beginner",
+    "A2 Elementary",
+    "B1 Intermediate",
+    "B2 Upper Intermediate",
+    "C1 Advanced",
+    "C2 Mastery"
+]
+
+NESTED_FIELD_STRUCTURES = {
+    "roles": {
+        "fields": ["title", "company", "location", "start", "end", "current", "description"],
+        "labels": {
+            "title": "Title",
+            "company": "Company",
+            "location": "Location",
+            "start": "Start Date (YYYY-MM)",
+            "end": "End Date (YYYY-MM)",
+            "current": "Currently Working",
+            "description": "Description"
+        },
+        "types": {"current": "boolean"}
+    },
+    "education": {
+        "fields": ["degree", "field", "school", "start", "end"],
+        "labels": {
+            "degree": "Degree",
+            "field": "Field of Study",
+            "school": "School/University",
+            "start": "Start Date (YYYY-MM)",
+            "end": "End Date (YYYY-MM)"
+        }
+    },
+    "certificates": {
+        "fields": ["name", "number", "start", "end"],
+        "labels": {
+            "name": "Course Name",
+            "number": "Certificate Number",
+            "start": "Start Date (YYYY-MM)",
+            "end": "End Date (YYYY-MM)"
+        }
+    },
+    "languages": {
+        "fields": ["language", "proficiency"],
+        "labels": {
+            "language": "Language",
+            "proficiency": "Proficiency Level"
+        },
+        "types": {"proficiency": "select"}
+    }
+}
+
+
+# ==================== HELPERS ====================
 
 def chunk_text(text: str, chunk_size: int = 4000):
     """Split text into Telegram-safe chunks"""
@@ -73,6 +143,24 @@ async def send_file_from_storage(update: Update, file_url: str, bucket: str, cap
         logger.error(f"Error sending file: {e}")
 
 
+def format_nested_array(data_list, field_type):
+    """Format nested array data for display"""
+    if not data_list:
+        return "None"
+    
+    structure = NESTED_FIELD_STRUCTURES.get(field_type, {})
+    labels = structure.get("labels", {})
+    
+    result = []
+    for idx, item in enumerate(data_list, 1):
+        result.append(f"\n*{idx}.*")
+        for key, value in item.items():
+            label = labels.get(key, key.title())
+            result.append(f"  • {label}: {value}")
+    
+    return "\n".join(result)
+
+
 # ==================== MAIN MENU ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -81,6 +169,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📋 View Applicants", callback_data="view")],
         [InlineKeyboardButton("💰 Payment Management", callback_data="payment")],
         [InlineKeyboardButton("📅 Subscription Management", callback_data="subscription")],
+        [InlineKeyboardButton("✏️ Edit Applicant", callback_data="edit_applicant")],
         [InlineKeyboardButton("🗄️ Archive Management", callback_data="archive")],
         [InlineKeyboardButton("📊 Statistics", callback_data="stats")]
     ]
@@ -132,14 +221,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📋 *View Applicants*\n\nSelect a category:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
-        )
-    
-    elif data == "view_find":
-        user_states[user_id] = {"action": "find"}
-        await query.message.edit_text(
-            "🔍 *Find Applicant*\n\nSend **email alias** or **WhatsApp number**:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="view")]]),
-            parse_mode="Markdown"
         )
     
     elif data == "view_pending":
@@ -246,6 +327,338 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="view")]])
             )
     
+    # ==================== EDIT APPLICANT ====================
+    elif data == "edit_applicant":
+        user_states[user_id] = {
+            "action": "edit_field",
+            "step": "identify"
+        }
+
+        await query.message.edit_text(
+            "✏️ *Edit Applicant*\n\n"
+            "Send applicant **alias email** or **WhatsApp number**:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="back")]
+            ]),
+            parse_mode="Markdown"
+        )
+
+    elif data.startswith("edit_col:"):
+        col = data.split("edit_col:")[1]
+        state = user_states.get(user_id)
+        if not state:
+            return
+
+        state.update({
+            "step": "nested_menu" if col in NESTED_FIELD_STRUCTURES else "edit_value",
+            "column": col
+        })
+
+        # Handle application_plan with menu
+        if col == "application_plan":
+            keyboard = [
+                [InlineKeyboardButton(plan, callback_data=f"plan:{plan}")]
+                for plan in APPLICATION_PLAN_OPTIONS
+            ]
+            keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="back")])
+            
+            await query.message.edit_text(
+                "📝 *Select Application Plan:*",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+        
+        # Handle nested fields (roles, education, certificates, languages)
+        elif col in NESTED_FIELD_STRUCTURES:
+            applicant = state.get("applicant", {})
+            current_data = applicant.get(col, [])
+            
+            keyboard = [
+                [InlineKeyboardButton("➕ Add New Entry", callback_data=f"nested_add:{col}")],
+            ]
+            
+            # Show existing entries
+            if current_data:
+                await query.message.edit_text(
+                    f"📋 *Current {EDITABLE_FIELDS[col]}:*\n{format_nested_array(current_data, col)}\n\n"
+                    "Select an action:",
+                    reply_markup=InlineKeyboardMarkup(keyboard + [
+                        [InlineKeyboardButton("✏️ Edit Entry", callback_data=f"nested_edit:{col}")],
+                        [InlineKeyboardButton("🗑️ Delete Entry", callback_data=f"nested_delete:{col}")],
+                        [InlineKeyboardButton("🔙 Cancel", callback_data="back")]
+                    ]),
+                    parse_mode="Markdown"
+                )
+            else:
+                keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="back")])
+                await query.message.edit_text(
+                    f"📋 *{EDITABLE_FIELDS[col]}*\n\nNo entries found. Add a new one?",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="Markdown"
+                )
+        
+        # Handle simple fields
+        elif col in ["roles", "education", "languages", "skills"]:
+            await query.message.edit_text(
+                f"✏️ *Editing {EDITABLE_FIELDS[col]}*\n\n"
+                "Send **full JSON array** to replace the value:",
+                parse_mode="Markdown"
+            )
+        else:
+            await query.message.edit_text(
+                f"✏️ *Editing {EDITABLE_FIELDS[col]}*\n\n"
+                "Send the new value:",
+                parse_mode="Markdown"
+            )
+
+    # Handle application_plan selection
+    elif data.startswith("plan:"):
+        plan = data.split("plan:")[1]
+        state = user_states.get(user_id)
+        if not state:
+            return
+        
+        lookup_field = state["lookup_field"]
+        lookup_value = state["lookup_value"]
+        
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.table("applications")
+                .update({"application_plan": plan})
+                .eq(lookup_field, lookup_value)
+                .execute()
+            )
+            
+            await query.message.edit_text(
+                f"✅ *Application Plan updated to: {plan}*",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Main Menu", callback_data="back")]
+                ]),
+                parse_mode="Markdown"
+            )
+            del user_states[user_id]
+        except Exception as e:
+            await query.message.edit_text(f"❌ Error: {e}")
+
+    # Handle nested field operations
+    elif data.startswith("nested_add:"):
+        field_type = data.split("nested_add:")[1]
+        state = user_states.get(user_id)
+        if not state:
+            return
+        
+        state.update({
+            "step": "nested_input",
+            "nested_action": "add",
+            "nested_type": field_type,
+            "nested_data": {},
+            "nested_field_index": 0
+        })
+        
+        # Start collecting fields
+        structure = NESTED_FIELD_STRUCTURES[field_type]
+        first_field = structure["fields"][0]
+        field_label = structure["labels"][first_field]
+        
+        # Check if it's a boolean or select field
+        field_types = structure.get("types", {})
+        if first_field in field_types:
+            if field_types[first_field] == "boolean":
+                keyboard = [
+                    [InlineKeyboardButton("✅ True", callback_data=f"bool:true:{first_field}")],
+                    [InlineKeyboardButton("❌ False", callback_data=f"bool:false:{first_field}")],
+                    [InlineKeyboardButton("🔙 Cancel", callback_data="back")]
+                ]
+                await query.message.edit_text(
+                    f"Select *{field_label}*:",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="Markdown"
+                )
+                return
+            elif field_types[first_field] == "select" and first_field == "proficiency":
+                keyboard = [
+                    [InlineKeyboardButton(prof, callback_data=f"prof:{prof}")]
+                    for prof in LANGUAGE_PROFICIENCY_OPTIONS
+                ]
+                keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="back")])
+                await query.message.edit_text(
+                    f"Select *{field_label}*:",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="Markdown"
+                )
+                return
+        
+        await query.message.edit_text(
+            f"📝 Enter *{field_label}*:",
+            parse_mode="Markdown"
+        )
+
+    elif data.startswith("nested_edit:"):
+        field_type = data.split("nested_edit:")[1]
+        state = user_states.get(user_id)
+        if not state:
+            return
+        
+        applicant = state.get("applicant", {})
+        current_data = applicant.get(field_type, [])
+        
+        if not current_data:
+            await query.message.edit_text("❌ No entries to edit.")
+            return
+        
+        state.update({
+            "step": "nested_select_entry",
+            "nested_action": "edit",
+            "nested_type": field_type
+        })
+        
+        keyboard = [
+            [InlineKeyboardButton(f"Entry {i+1}", callback_data=f"entry_select:{i}")]
+            for i in range(len(current_data))
+        ]
+        keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="back")])
+        
+        await query.message.edit_text(
+            f"Select entry to edit:\n{format_nested_array(current_data, field_type)}",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+
+    elif data.startswith("nested_delete:"):
+        field_type = data.split("nested_delete:")[1]
+        state = user_states.get(user_id)
+        if not state:
+            return
+        
+        applicant = state.get("applicant", {})
+        current_data = applicant.get(field_type, [])
+        
+        if not current_data:
+            await query.message.edit_text("❌ No entries to delete.")
+            return
+        
+        state.update({
+            "step": "nested_select_entry",
+            "nested_action": "delete",
+            "nested_type": field_type
+        })
+        
+        keyboard = [
+            [InlineKeyboardButton(f"Entry {i+1}", callback_data=f"entry_select:{i}")]
+            for i in range(len(current_data))
+        ]
+        keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="back")])
+        
+        await query.message.edit_text(
+            f"Select entry to delete:\n{format_nested_array(current_data, field_type)}",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+
+    elif data.startswith("entry_select:"):
+        entry_index = int(data.split("entry_select:")[1])
+        state = user_states.get(user_id)
+        if not state:
+            return
+        
+        nested_action = state.get("nested_action")
+        field_type = state.get("nested_type")
+        applicant = state.get("applicant", {})
+        current_data = applicant.get(field_type, [])
+        
+        if nested_action == "delete":
+            # Delete the entry
+            lookup_field = state["lookup_field"]
+            lookup_value = state["lookup_value"]
+            
+            current_data.pop(entry_index)
+            
+            try:
+                await asyncio.to_thread(
+                    lambda: supabase.table("applications")
+                    .update({field_type: current_data})
+                    .eq(lookup_field, lookup_value)
+                    .execute()
+                )
+                
+                await query.message.edit_text(
+                    f"✅ *Entry deleted successfully!*",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🏠 Main Menu", callback_data="back")]
+                    ]),
+                    parse_mode="Markdown"
+                )
+                del user_states[user_id]
+            except Exception as e:
+                await query.message.edit_text(f"❌ Error: {e}")
+        
+        elif nested_action == "edit":
+            # Start editing the entry
+            state.update({
+                "step": "nested_input",
+                "nested_entry_index": entry_index,
+                "nested_data": current_data[entry_index].copy(),
+                "nested_field_index": 0
+            })
+            
+            structure = NESTED_FIELD_STRUCTURES[field_type]
+            first_field = structure["fields"][0]
+            field_label = structure["labels"][first_field]
+            current_value = current_data[entry_index].get(first_field, "")
+            
+            # Check if it's a boolean or select field
+            field_types = structure.get("types", {})
+            if first_field in field_types:
+                if field_types[first_field] == "boolean":
+                    keyboard = [
+                        [InlineKeyboardButton("✅ True", callback_data=f"bool:true:{first_field}")],
+                        [InlineKeyboardButton("❌ False", callback_data=f"bool:false:{first_field}")],
+                        [InlineKeyboardButton("🔙 Cancel", callback_data="back")]
+                    ]
+                    await query.message.edit_text(
+                        f"Current: *{current_value}*\n\nSelect new *{field_label}*:",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="Markdown"
+                    )
+                    return
+                elif field_types[first_field] == "select" and first_field == "proficiency":
+                    keyboard = [
+                        [InlineKeyboardButton(prof, callback_data=f"prof:{prof}")]
+                        for prof in LANGUAGE_PROFICIENCY_OPTIONS
+                    ]
+                    keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="back")])
+                    await query.message.edit_text(
+                        f"Current: *{current_value}*\n\nSelect new *{field_label}*:",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="Markdown"
+                    )
+                    return
+            
+            await query.message.edit_text(
+                f"Current: *{current_value}*\n\nEnter new *{field_label}*:",
+                parse_mode="Markdown"
+            )
+
+    # Handle boolean selections
+    elif data.startswith("bool:"):
+        _, value, field_name = data.split(":")
+        bool_value = value == "true"
+        
+        state = user_states.get(user_id)
+        if not state:
+            return
+        
+        await process_nested_field_input(update, context, str(bool_value))
+
+    # Handle proficiency selections
+    elif data.startswith("prof:"):
+        proficiency = data.split("prof:")[1]
+        state = user_states.get(user_id)
+        if not state:
+            return
+        
+        await process_nested_field_input(update, context, proficiency)
+    
     # ==================== PAYMENT SUBMENU ====================
     elif data == "payment":
         keyboard = [
@@ -280,12 +693,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ==================== SUBSCRIPTION SUBMENU ====================
     elif data == "subscription":
         keyboard = [
-        [InlineKeyboardButton("📅 Set Subscription Date", callback_data="sub_set")],
-        [InlineKeyboardButton("➕ Extend Subscription", callback_data="sub_extend")],
-        [InlineKeyboardButton("❌ Expired", callback_data="sub_expired")],
-        [InlineKeyboardButton("⏳ Expiring Soon", callback_data="sub_soon")],
-        [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back")]
-    ]
+            [InlineKeyboardButton("📅 Set Subscription Date", callback_data="sub_set")],
+            [InlineKeyboardButton("➕ Extend Subscription", callback_data="sub_extend")],
+            [InlineKeyboardButton("❌ Expired", callback_data="sub_expired")],
+            [InlineKeyboardButton("⏳ Expiring Soon", callback_data="sub_soon")],
+            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back")]
+        ]
         await query.message.edit_text(
             "📅 *Subscription Management*\n\nSelect an action:",
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -339,7 +752,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "\n".join([f"{u['alias_email']} | {u['whatsapp']} - {u['subscription_expiration']}" for u in expiring]) \
             if expiring else "No subscriptions expiring in the next 7 days."
         await query.message.edit_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="subscription")]]))
-
     
     # ==================== ARCHIVE SUBMENU ====================
     elif data == "archive":
@@ -438,6 +850,159 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"❌ Error: {str(e)}",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back")]])
             )
+
+
+# ==================== NESTED FIELD INPUT PROCESSOR ====================
+
+async def process_nested_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    """Process input for nested field creation/editing"""
+    user_id = update.effective_user.id
+    state = user_states.get(user_id)
+    
+    if not state or state.get("step") != "nested_input":
+        return
+    
+    field_type = state["nested_type"]
+    structure = NESTED_FIELD_STRUCTURES[field_type]
+    fields = structure["fields"]
+    labels = structure["labels"]
+    field_types = structure.get("types", {})
+    current_field_idx = state["nested_field_index"]
+    current_field = fields[current_field_idx]
+    
+    # Store the input
+    state["nested_data"][current_field] = text
+    
+    # Move to next field
+    next_field_idx = current_field_idx + 1
+    
+    if next_field_idx < len(fields):
+        # More fields to collect
+        state["nested_field_index"] = next_field_idx
+        next_field = fields[next_field_idx]
+        next_label = labels[next_field]
+        
+        # Check if next field is boolean or select
+        if next_field in field_types:
+            if field_types[next_field] == "boolean":
+                keyboard = [
+                    [InlineKeyboardButton("✅ True", callback_data=f"bool:true:{next_field}")],
+                    [InlineKeyboardButton("❌ False", callback_data=f"bool:false:{next_field}")],
+                    [InlineKeyboardButton("🔙 Cancel", callback_data="back")]
+                ]
+                
+                if update.callback_query:
+                    await update.callback_query.message.edit_text(
+                        f"Select *{next_label}*:",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"Select *{next_label}*:",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="Markdown"
+                    )
+                return
+            elif field_types[next_field] == "select" and next_field == "proficiency":
+                keyboard = [
+                    [InlineKeyboardButton(prof, callback_data=f"prof:{prof}")]
+                    for prof in LANGUAGE_PROFICIENCY_OPTIONS
+                ]
+                keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="back")])
+                
+                if update.callback_query:
+                    await update.callback_query.message.edit_text(
+                        f"Select *{next_label}*:",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"Select *{next_label}*:",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="Markdown"
+                    )
+                return
+        
+        if update.callback_query:
+            await update.callback_query.message.edit_text(
+                f"📝 Enter *{next_label}*:",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                f"📝 Enter *{next_label}*:",
+                parse_mode="Markdown"
+            )
+    else:
+        # All fields collected, save to database
+        lookup_field = state["lookup_field"]
+        lookup_value = state["lookup_value"]
+        nested_action = state["nested_action"]
+        
+        # Get current data
+        result = await asyncio.to_thread(
+            lambda: supabase.table("applications")
+            .select(field_type)
+            .eq(lookup_field, lookup_value)
+            .execute()
+        )
+        
+        if not result.data:
+            if update.callback_query:
+                await update.callback_query.message.edit_text("❌ Applicant not found.")
+            else:
+                await update.message.reply_text("❌ Applicant not found.")
+            del user_states[user_id]
+            return
+        
+        current_data = result.data[0].get(field_type, [])
+        if not isinstance(current_data, list):
+            current_data = []
+        
+        # Add or edit entry
+        if nested_action == "add":
+            current_data.append(state["nested_data"])
+        elif nested_action == "edit":
+            entry_index = state["nested_entry_index"]
+            current_data[entry_index] = state["nested_data"]
+        
+        # Update database
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.table("applications")
+                .update({field_type: current_data})
+                .eq(lookup_field, lookup_value)
+                .execute()
+            )
+            
+            success_msg = f"✅ *{EDITABLE_FIELDS[field_type]} {'added' if nested_action == 'add' else 'updated'} successfully!*"
+            
+            if update.callback_query:
+                await update.callback_query.message.edit_text(
+                    success_msg,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🏠 Main Menu", callback_data="back")]
+                    ]),
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text(
+                    success_msg,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🏠 Main Menu", callback_data="back")]
+                    ]),
+                    parse_mode="Markdown"
+                )
+            
+            del user_states[user_id]
+        except Exception as e:
+            error_msg = f"❌ Error: {e}"
+            if update.callback_query:
+                await update.callback_query.message.edit_text(error_msg)
+            else:
+                await update.message.reply_text(error_msg)
 
 
 # ==================== TEXT INPUT HANDLER ====================
@@ -539,7 +1104,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "extend_sub" and state.get("step") == "days":
         email = state.get("email")
         try:
-            field, value = resolve_lookup(text)
+            field, value = resolve_lookup(email)
             days = int(text)
             result = await asyncio.to_thread(
                 lambda: supabase.table("applications")
@@ -578,6 +1143,79 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=reply_markup)
         del user_states[user_id]
+
+    # Edit field - identify applicant
+    elif action == "edit_field" and state["step"] == "identify":
+        field, value = resolve_lookup(text)
+
+        result = await asyncio.to_thread(
+            lambda: supabase.table("applications")
+            .select("*")
+            .eq(field, value)
+            .execute()
+        )
+
+        if not result.data:
+            await update.message.reply_text("❌ Applicant not found.")
+            del user_states[user_id]
+            return
+
+        user_states[user_id].update({
+            "step": "choose_field",
+            "lookup_field": field,
+            "lookup_value": value,
+            "applicant": result.data[0]
+        })
+
+        keyboard = [
+            [InlineKeyboardButton(v, callback_data=f"edit_col:{k}")]
+            for k, v in EDITABLE_FIELDS.items()
+        ]
+        keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="back")])
+
+        await update.message.reply_text(
+            "🧩 *Select field to edit:*",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+
+    # Edit simple field - receive value
+    elif action == "edit_field" and state["step"] == "edit_value":
+        col = state["column"]
+        lookup_field = state["lookup_field"]
+        lookup_value = state["lookup_value"]
+
+        try:
+            # Parse JSON for array fields
+            if col in ["roles", "education", "languages", "skills"]:
+                import json
+                new_value = json.loads(text)
+            else:
+                new_value = text
+
+            await asyncio.to_thread(
+                lambda: supabase.table("applications")
+                .update({col: new_value})
+                .eq(lookup_field, lookup_value)
+                .execute()
+            )
+
+            await update.message.reply_text(
+                f"✅ *Updated {EDITABLE_FIELDS[col]} successfully!*",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Main Menu", callback_data="back")]
+                ]),
+                parse_mode="Markdown"
+            )
+
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+
+        del user_states[user_id]
+    
+    # Handle nested field input
+    elif action == "edit_field" and state.get("step") == "nested_input":
+        await process_nested_field_input(update, context, text)
     
     # Archive
     elif action == "archive":
@@ -746,9 +1384,9 @@ async def find_applicant_details(update: Update, text: str):
         # Legalisation
         await update.message.reply_text(
             f"📝 *Legalisation*\n\n"
-            f"Authorized Countried: {a.get('autorized_countries','-')}\n"
-            f"Visa: {a.get('visa','-')}"
-            f"Willing to relocation: {a.get('relocate','-')}"
+            f"Authorized Countries: {a.get('autorized_countries','-')}\n"
+            f"Visa: {a.get('visa','-')}\n"
+            f"Willing to relocation: {a.get('relocate','-')}\n"
             f"Total years of Experience: {a.get('experience','-')} years",
             parse_mode='Markdown'
         )
