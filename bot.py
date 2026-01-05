@@ -3,6 +3,7 @@ import io
 import asyncio
 import urllib.parse
 import logging
+import re
 from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -39,7 +40,6 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Store user state
 user_states = {}
 
-# ==================== CONSTANTS ====================
 EDITABLE_FIELDS = {
     "first_name": "First Name",
     "last_name": "Last Name",
@@ -65,6 +65,7 @@ LANGUAGE_PROFICIENCY_OPTIONS = [
     "C2 Mastery"
 ]
 
+# Data structure definitions for nested fields
 NESTED_FIELD_STRUCTURES = {
     "roles": {
         "fields": ["title", "company", "location", "start", "end", "current", "description"],
@@ -77,7 +78,12 @@ NESTED_FIELD_STRUCTURES = {
             "current": "Currently Working",
             "description": "Description"
         },
-        "types": {"current": "boolean"}
+        "types": {
+            "current": "boolean",
+            "start": "date",
+            "end": "date"
+        },
+        "optional": ["end", "start"]
     },
     "education": {
         "fields": ["degree", "field", "school", "start", "end"],
@@ -87,7 +93,12 @@ NESTED_FIELD_STRUCTURES = {
             "school": "School/University",
             "start": "Start Date (YYYY-MM)",
             "end": "End Date (YYYY-MM)"
-        }
+        },
+        "types": {
+            "start": "date",
+            "end": "date"
+        },
+        "optional": ["end", "start"]
     },
     "certificates": {
         "fields": ["name", "number", "start", "end"],
@@ -96,7 +107,12 @@ NESTED_FIELD_STRUCTURES = {
             "number": "Certificate Number",
             "start": "Start Date (YYYY-MM)",
             "end": "End Date (YYYY-MM)"
-        }
+        },
+        "types": {
+            "start": "date",
+            "end": "date"
+        },
+        "optional": ["number", "end", "start"]
     },
     "languages": {
         "fields": ["language", "proficiency"],
@@ -104,12 +120,79 @@ NESTED_FIELD_STRUCTURES = {
             "language": "Language",
             "proficiency": "Proficiency Level"
         },
-        "types": {"proficiency": "select"}
+        "types": {
+            "proficiency": "select"
+        },
+        "optional": []
     }
 }
 
 
-# ==================== HELPERS ====================
+# ==================== UTILITY FUNCTIONS ====================
+
+def validate_date_format(date_str: str) -> tuple[bool, str]:
+    """
+    Validate date format YYYY-MM
+    Returns: (is_valid, error_message)
+    """
+    if not date_str or date_str.lower() == 'skip':
+        return True, ""  # Allow empty/skip for optional fields
+    
+    # Check format
+    if not re.match(r'^\d{4}-\d{2}$', date_str):
+        return False, "Invalid format. Please use YYYY-MM (e.g., 2024-01)"
+    
+    try:
+        year, month = date_str.split('-')
+        year = int(year)
+        month = int(month)
+        
+        # Validate year range
+        if year < 1950 or year > 2050:
+            return False, f"Year must be between 1950 and 2050. You entered: {year}"
+        
+        # Validate month range
+        if month < 1 or month > 12:
+            return False, f"Month must be between 01 and 12. You entered: {month:02d}"
+        
+        return True, ""
+    except Exception as e:
+        return False, f"Error parsing date: {str(e)}"
+
+
+def get_field_prompt(field_type: str, field_name: str, labels: dict, is_editing: bool = False, current_value: str = "") -> str:
+    """
+    Generate appropriate prompt text for a field including skip/empty options
+    """
+    label = labels.get(field_name, field_name.title())
+    optional = is_field_optional(field_type, field_name)
+    
+    # Build the prompt
+    prompt_parts = []
+    
+    if is_editing and current_value:
+        prompt_parts.append(f"Current: *{current_value}*\n")
+    
+    prompt_parts.append(f"📝 Enter *{label}*:")
+    
+    # Add format hint for date fields
+    structure = NESTED_FIELD_STRUCTURES.get(field_type, {})
+    field_types = structure.get("types", {})
+    if field_name in field_types and field_types[field_name] == "date":
+        prompt_parts.append("\n_Format: YYYY-MM (e.g., 2024-01)_")
+    
+    # Add skip option for optional fields
+    if optional:
+        prompt_parts.append("\n\n💡 _Send 'skip' or 'empty' to leave blank_")
+    
+    return "".join(prompt_parts)
+
+def is_field_optional(field_type: str, field_name: str) -> bool:
+    """Check if a field is optional"""
+    structure = NESTED_FIELD_STRUCTURES.get(field_type, {})
+    optional_fields = structure.get("optional", [])
+    return field_name in optional_fields
+
 
 def chunk_text(text: str, chunk_size: int = 4000):
     """Split text into Telegram-safe chunks"""
@@ -153,7 +236,7 @@ def format_nested_array(data_list, field_type):
     
     result = []
     for idx, item in enumerate(data_list, 1):
-        result.append(f"\n*{idx}.*")
+        result.append(f"\n*Entry {idx}:*")
         for key, value in item.items():
             label = labels.get(key, key.title())
             result.append(f"  • {label}: {value}")
@@ -377,14 +460,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("➕ Add New Entry", callback_data=f"nested_add:{col}")],
             ]
             
-            # Show existing entries
-            if current_data:
+            # Show existing entries with edit/delete options
+            if current_data and len(current_data) > 0:
+                keyboard.extend([
+                    [InlineKeyboardButton("✏️ Edit Entry", callback_data=f"nested_edit:{col}")],
+                    [InlineKeyboardButton("🗑️ Delete Entry", callback_data=f"nested_delete:{col}")],
+                ])
+                
                 await query.message.edit_text(
                     f"📋 *Current {EDITABLE_FIELDS[col]}:*\n{format_nested_array(current_data, col)}\n\n"
                     "Select an action:",
                     reply_markup=InlineKeyboardMarkup(keyboard + [
-                        [InlineKeyboardButton("✏️ Edit Entry", callback_data=f"nested_edit:{col}")],
-                        [InlineKeyboardButton("🗑️ Delete Entry", callback_data=f"nested_delete:{col}")],
                         [InlineKeyboardButton("🔙 Cancel", callback_data="back")]
                     ]),
                     parse_mode="Markdown"
@@ -397,17 +483,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
         
-        # Handle simple fields
-        elif col in ["roles", "education", "languages", "skills"]:
-            await query.message.edit_text(
-                f"✏️ *Editing {EDITABLE_FIELDS[col]}*\n\n"
-                "Send **full JSON array** to replace the value:",
-                parse_mode="Markdown"
-            )
+        # Handle simple text fields
         else:
             await query.message.edit_text(
-                f"✏️ *Editing {EDITABLE_FIELDS[col]}*\n\n"
-                "Send the new value:",
+                f"✏️ *Editing {EDITABLE_FIELDS[col]}*\n\nSend the new value:",
                 parse_mode="Markdown"
             )
 
@@ -440,7 +519,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await query.message.edit_text(f"❌ Error: {e}")
 
-    # Handle nested field operations
+    # ==================== NESTED FIELD OPERATIONS ====================
+    
+    # Add new entry to nested field
     elif data.startswith("nested_add:"):
         field_type = data.split("nested_add:")[1]
         state = user_states.get(user_id)
@@ -488,11 +569,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
         
+        # Add skip button for optional fields
+        optional_text = ""
+        if is_field_optional(field_type, first_field):
+            optional_text = "\n\n_Send 'skip' to leave empty_"
+        
         await query.message.edit_text(
-            f"📝 Enter *{field_label}*:",
+            f"📝 Enter *{field_label}*:{optional_text}",
             parse_mode="Markdown"
         )
 
+    # Edit existing entry in nested field
     elif data.startswith("nested_edit:"):
         field_type = data.split("nested_edit:")[1]
         state = user_states.get(user_id)
@@ -502,7 +589,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         applicant = state.get("applicant", {})
         current_data = applicant.get(field_type, [])
         
-        if not current_data:
+        if not current_data or len(current_data) == 0:
             await query.message.edit_text("❌ No entries to edit.")
             return
         
@@ -512,6 +599,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "nested_type": field_type
         })
         
+        # Create buttons for each entry
         keyboard = [
             [InlineKeyboardButton(f"Entry {i+1}", callback_data=f"entry_select:{i}")]
             for i in range(len(current_data))
@@ -519,11 +607,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="back")])
         
         await query.message.edit_text(
-            f"Select entry to edit:\n{format_nested_array(current_data, field_type)}",
+            f"✏️ *Select entry to edit:*\n{format_nested_array(current_data, field_type)}",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
 
+    # Delete entry from nested field
     elif data.startswith("nested_delete:"):
         field_type = data.split("nested_delete:")[1]
         state = user_states.get(user_id)
@@ -533,7 +622,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         applicant = state.get("applicant", {})
         current_data = applicant.get(field_type, [])
         
-        if not current_data:
+        if not current_data or len(current_data) == 0:
             await query.message.edit_text("❌ No entries to delete.")
             return
         
@@ -543,6 +632,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "nested_type": field_type
         })
         
+        # Create buttons for each entry
         keyboard = [
             [InlineKeyboardButton(f"Entry {i+1}", callback_data=f"entry_select:{i}")]
             for i in range(len(current_data))
@@ -550,11 +640,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="back")])
         
         await query.message.edit_text(
-            f"Select entry to delete:\n{format_nested_array(current_data, field_type)}",
+            f"🗑️ *Select entry to delete:*\n{format_nested_array(current_data, field_type)}",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
 
+    # Handle entry selection for edit/delete
     elif data.startswith("entry_select:"):
         entry_index = int(data.split("entry_select:")[1])
         state = user_states.get(user_id)
@@ -566,12 +657,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         applicant = state.get("applicant", {})
         current_data = applicant.get(field_type, [])
         
+        if entry_index >= len(current_data):
+            await query.message.edit_text("❌ Invalid entry selection.")
+            return
+        
+        # DELETE ACTION
         if nested_action == "delete":
-            # Delete the entry
             lookup_field = state["lookup_field"]
             lookup_value = state["lookup_value"]
             
-            current_data.pop(entry_index)
+            # Remove the entry
+            deleted_entry = current_data.pop(entry_index)
             
             try:
                 await asyncio.to_thread(
@@ -582,7 +678,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 
                 await query.message.edit_text(
-                    f"✅ *Entry deleted successfully!*",
+                    f"✅ *Entry {entry_index + 1} deleted successfully!*\n\n"
+                    f"Deleted: {str(deleted_entry)[:100]}...",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🏠 Main Menu", callback_data="back")]
                     ]),
@@ -592,6 +689,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await query.message.edit_text(f"❌ Error: {e}")
         
+        # EDIT ACTION
         elif nested_action == "edit":
             # Start editing the entry
             state.update({
@@ -634,14 +732,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
             
+            # Add skip button for optional fields
+            optional_text = ""
+            if is_field_optional(field_type, first_field):
+                optional_text = "\n\n_Send 'skip' to leave empty_"
+            
             await query.message.edit_text(
-                f"Current: *{current_value}*\n\nEnter new *{field_label}*:",
+                f"Current: *{current_value}*\n\nEnter new *{field_label}*:{optional_text}",
                 parse_mode="Markdown"
             )
 
     # Handle boolean selections
     elif data.startswith("bool:"):
-        _, value, field_name = data.split(":")
+        _, value, field_name = data.split(":", 2)
         bool_value = value == "true"
         
         state = user_states.get(user_id)
@@ -652,7 +755,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Handle proficiency selections
     elif data.startswith("prof:"):
-        proficiency = data.split("prof:")[1]
+        proficiency = data.split("prof:", 1)[1]
         state = user_states.get(user_id)
         if not state:
             return
@@ -725,21 +828,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "sub_expired":
         today_str = date.today().isoformat()
-        response = await asyncio.to_thread(
-            lambda: supabase.table("applications")
-            .select("alias_email, whatsapp, subscription_expiration")
-            .lte("subscription_expiration", today_str)
-            .execute()
-        )
-        expired = response.data or []
-        msg = "⚠️ *Expired subscriptions:*\n\n" + \
-            "\n".join([f"{u['alias_email']} | {u['whatsapp']} - {u['subscription_expiration']}" for u in expired]) \
-            if expired else "No expired subscriptions today."
-        await query.message.edit_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="subscription")]]))
-
-    elif data == "sub_soon":
-        today = date.today()
-        soon = (today + timedelta(days=7)).isoformat()
         response = await asyncio.to_thread(
             lambda: supabase.table("applications")
             .select("alias_email, whatsapp, subscription_expiration")
@@ -855,7 +943,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== NESTED FIELD INPUT PROCESSOR ====================
 
 async def process_nested_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-    """Process input for nested field creation/editing"""
+    """Process input for nested field creation/editing with validation"""
     user_id = update.effective_user.id
     state = user_states.get(user_id)
     
@@ -869,6 +957,30 @@ async def process_nested_field_input(update: Update, context: ContextTypes.DEFAU
     field_types = structure.get("types", {})
     current_field_idx = state["nested_field_index"]
     current_field = fields[current_field_idx]
+    
+    # Handle skip/empty for optional fields
+    if text.lower() in ['skip', 'empty'] and is_field_optional(field_type, current_field):
+        text = ""
+    
+    # Validate date fields
+    if current_field in field_types and field_types[current_field] == "date":
+        is_valid, error_msg = validate_date_format(text)
+        
+        if not is_valid:
+            # Ask again with error message
+            retry_prompt = f"❌ {error_msg}\n\n{get_field_prompt(field_type, current_field, labels)}"
+            
+            if update.callback_query:
+                await update.callback_query.message.edit_text(
+                    retry_prompt,
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text(
+                    retry_prompt,
+                    parse_mode="Markdown"
+                )
+            return
     
     # Store the input
     state["nested_data"][current_field] = text
@@ -891,15 +1003,18 @@ async def process_nested_field_input(update: Update, context: ContextTypes.DEFAU
                     [InlineKeyboardButton("🔙 Cancel", callback_data="back")]
                 ]
                 
+                current_val = state["nested_data"].get(next_field, "") if state.get("nested_action") == "edit" else ""
+                prompt = get_field_prompt(field_type, next_field, labels, is_editing=bool(current_val), current_value=current_val)
+                
                 if update.callback_query:
                     await update.callback_query.message.edit_text(
-                        f"Select *{next_label}*:",
+                        prompt,
                         reply_markup=InlineKeyboardMarkup(keyboard),
                         parse_mode="Markdown"
                     )
                 else:
                     await update.message.reply_text(
-                        f"Select *{next_label}*:",
+                        prompt,
                         reply_markup=InlineKeyboardMarkup(keyboard),
                         parse_mode="Markdown"
                     )
@@ -911,28 +1026,42 @@ async def process_nested_field_input(update: Update, context: ContextTypes.DEFAU
                 ]
                 keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="back")])
                 
+                current_val = state["nested_data"].get(next_field, "") if state.get("nested_action") == "edit" else ""
+                prompt = get_field_prompt(field_type, next_field, labels, is_editing=bool(current_val), current_value=current_val)
+                
                 if update.callback_query:
                     await update.callback_query.message.edit_text(
-                        f"Select *{next_label}*:",
+                        prompt,
                         reply_markup=InlineKeyboardMarkup(keyboard),
                         parse_mode="Markdown"
                     )
                 else:
                     await update.message.reply_text(
-                        f"Select *{next_label}*:",
+                        prompt,
                         reply_markup=InlineKeyboardMarkup(keyboard),
                         parse_mode="Markdown"
                     )
                 return
         
+        # For regular text fields
+        current_val = ""
+        if state.get("nested_action") == "edit" and "nested_entry_index" in state:
+            applicant = state.get("applicant", {})
+            current_data = applicant.get(field_type, [])
+            entry_idx = state.get("nested_entry_index")
+            if entry_idx < len(current_data):
+                current_val = current_data[entry_idx].get(next_field, "")
+        
+        prompt = get_field_prompt(field_type, next_field, labels, is_editing=bool(current_val), current_value=current_val)
+        
         if update.callback_query:
             await update.callback_query.message.edit_text(
-                f"📝 Enter *{next_label}*:",
+                prompt,
                 parse_mode="Markdown"
             )
         else:
             await update.message.reply_text(
-                f"📝 Enter *{next_label}*:",
+                prompt,
                 parse_mode="Markdown"
             )
     else:
@@ -966,7 +1095,8 @@ async def process_nested_field_input(update: Update, context: ContextTypes.DEFAU
             current_data.append(state["nested_data"])
         elif nested_action == "edit":
             entry_index = state["nested_entry_index"]
-            current_data[entry_index] = state["nested_data"]
+            if entry_index < len(current_data):
+                current_data[entry_index] = state["nested_data"]
         
         # Update database
         try:
@@ -1075,7 +1205,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Set subscription - date step
     elif action == "set_sub" and state.get("step") == "date":
         email = state.get("email")
+        
+        # Validate date format (YYYY-MM-DD for subscription)
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$', text):
+            await update.message.reply_text(
+                f"❌ Invalid date format.\n\n"
+                f"📅 Please send the date in format: *YYYY-MM-DD*\n"
+                f"Example: 2024-12-31",
+                parse_mode='Markdown'
+            )
+            return
+        
         try:
+            # Try to parse the date to ensure it's valid
+            datetime.strptime(text, "%Y-%m-%d")
+            
             field, value = resolve_lookup(email)
             await asyncio.to_thread(
                 lambda: supabase.table("applications")
@@ -1088,9 +1232,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup,
                 parse_mode='Markdown'
             )
+            del user_states[user_id]
+        except ValueError:
+            await update.message.reply_text(
+                f"❌ Invalid date: {text}\n\n"
+                f"Please enter a valid date in format: *YYYY-MM-DD*",
+                parse_mode='Markdown'
+            )
         except Exception as e:
             await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=reply_markup)
-        del user_states[user_id]
+            del user_states[user_id]
     
     # Extend subscription - email step
     elif action == "extend_sub" and state.get("step") == "email":
@@ -1186,12 +1337,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lookup_value = state["lookup_value"]
 
         try:
-            # Parse JSON for array fields
-            if col in ["roles", "education", "languages", "skills"]:
-                import json
-                new_value = json.loads(text)
-            else:
-                new_value = text
+            new_value = text
 
             await asyncio.to_thread(
                 lambda: supabase.table("applications")
