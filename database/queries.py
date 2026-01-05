@@ -1,5 +1,7 @@
 import asyncio
 import io
+from datetime import datetime
+import urllib.parse
 import urllib.parse
 import logging
 from typing import Optional, List, Dict, Any
@@ -247,3 +249,87 @@ async def download_file_from_storage(file_url: str, bucket: str) -> Optional[io.
     except Exception as e:
         logger.error(f"Error downloading file: {e}")
         return None
+
+async def upload_file_to_storage(file_bytes: bytes, filename: str, bucket: str) -> Optional[str]:
+    """
+    Upload file to Supabase Storage.
+    
+    Args:
+        file_bytes: File content as bytes
+        filename: Name of the file
+        bucket: Storage bucket name (cv or pictures)
+        
+    Returns:
+        Public URL of uploaded file or None
+    """
+    try:
+        # Generate unique filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Clean filename - remove special characters
+        clean_filename = "".join(c for c in filename if c.isalnum() or c in ('.', '_', '-'))
+        unique_filename = f"{timestamp}_{clean_filename}"
+        
+        logger.info(f"Uploading file to {bucket}/{unique_filename}")
+        
+        # Determine content type
+        content_type = "application/octet-stream"
+        if filename.lower().endswith('.pdf'):
+            content_type = "application/pdf"
+        elif filename.lower().endswith(('.jpg', '.jpeg')):
+            content_type = "image/jpeg"
+        elif filename.lower().endswith('.png'):
+            content_type = "image/png"
+        elif filename.lower().endswith('.doc'):
+            content_type = "application/msword"
+        elif filename.lower().endswith('.docx'):
+            content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        
+        # Upload to Supabase Storage
+        await asyncio.to_thread(
+            lambda: supabase.storage.from_(bucket).upload(
+                unique_filename,
+                file_bytes,
+                {"content-type": content_type}
+            )
+        )
+        
+        # Get public URL
+        result = supabase.storage.from_(bucket).get_public_url(unique_filename)
+        logger.info(f"File uploaded successfully: {result}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error uploading file to storage: {e}", exc_info=True)
+        return None
+
+
+async def delete_file_from_storage(file_url: str, bucket: str) -> bool:
+    """
+    Delete file from Supabase Storage.
+    
+    Args:
+        file_url: URL of the file to delete
+        bucket: Storage bucket name
+        
+    Returns:
+        True if successful
+    """
+    if not file_url:
+        return True
+    
+    try:
+        # Extract filename from URL
+        path = urllib.parse.urlparse(file_url).path.split('/')[-1]
+        logger.info(f"Deleting file from {bucket}/{path}")
+        
+        # Delete from storage
+        await asyncio.to_thread(
+            lambda: supabase.storage.from_(bucket).remove([path])
+        )
+        
+        logger.info(f"File deleted successfully: {path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error deleting file from storage: {e}", exc_info=True)
+        return False

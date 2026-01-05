@@ -23,12 +23,74 @@ EDITABLE_FIELDS = {
     "email": "Personal Email",
     "whatsapp": "WhatsApp",
     "application_plan": "Application Plan",
+    "cv_url": "CV Document",
+    "picture_url": "Profile Picture",
+    "recommendation_url": "Recommendation Letters",  # Array
+    "achievements": "Achievements",  # Text field
+    "authorized_countries": "Authorized Countries",  # Multiple choice
+    "visa": "Visa Status",  # Menu
+    "relocate": "Willing to Relocate",  # Menu
+    "experience": "Years of Experience",  # Number
+    "employment_type": "Employment Type",  # Menu
+    "search_accuracy": "Search Accuracy",  # Menu
+    "country_preference": "Country Preferences",  # Multiple choice
+    "socials": "Social Media Links",  # Submenu
+    "apply_role": "Applying For Role",  # Text
+    "general": "General Information",  # Submenu
+    "skills": "Skills",  # Array
     "roles": "Roles",
     "education": "Education",
-    "skills": "Skills",
     "languages": "Languages",
     "certificates": "Certificates",
 }
+
+# New constants
+YES_NO_OPTIONS = ["Yes", "No"]
+
+EMPLOYMENT_TYPE_OPTIONS = ["On-site", "Remote", "Hybrid"]
+
+SEARCH_ACCURACY_OPTIONS = [
+    "Broad Match",
+    "Exact Match",
+    ">=50%",
+    ">=60%",
+    ">=70%",
+    ">=80%",
+    ">=90%"
+]
+
+CURRENCY_OPTIONS = ["USD", "EUR", "TND"]
+
+# List of countries for autocomplete
+COUNTRIES_LIST = [
+    "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Argentina", "Armenia",
+    "Australia", "Austria", "Azerbaijan", "Bahamas", "Bahrain", "Bangladesh", "Barbados",
+    "Belarus", "Belgium", "Belize", "Benin", "Bhutan", "Bolivia", "Bosnia and Herzegovina",
+    "Botswana", "Brazil", "Brunei", "Bulgaria", "Burkina Faso", "Burundi", "Cambodia",
+    "Cameroon", "Canada", "Cape Verde", "Central African Republic", "Chad", "Chile", "China",
+    "Colombia", "Comoros", "Congo", "Costa Rica", "Croatia", "Cuba", "Cyprus", "Czech Republic",
+    "Denmark", "Djibouti", "Dominica", "Dominican Republic", "East Timor", "Ecuador", "Egypt",
+    "El Salvador", "Equatorial Guinea", "Eritrea", "Estonia", "Ethiopia", "Fiji", "Finland",
+    "France", "Gabon", "Gambia", "Georgia", "Germany", "Ghana", "Greece", "Grenada", "Guatemala",
+    "Guinea", "Guinea-Bissau", "Guyana", "Haiti", "Honduras", "Hungary", "Iceland", "India",
+    "Indonesia", "Iran", "Iraq", "Ireland", "Israel", "Italy", "Ivory Coast", "Jamaica", "Japan",
+    "Jordan", "Kazakhstan", "Kenya", "Kiribati", "North Korea", "South Korea", "Kuwait",
+    "Kyrgyzstan", "Laos", "Latvia", "Lebanon", "Lesotho", "Liberia", "Libya", "Liechtenstein",
+    "Lithuania", "Luxembourg", "Macedonia", "Madagascar", "Malawi", "Malaysia", "Maldives",
+    "Mali", "Malta", "Marshall Islands", "Mauritania", "Mauritius", "Mexico", "Micronesia",
+    "Moldova", "Monaco", "Mongolia", "Montenegro", "Morocco", "Mozambique", "Myanmar", "Namibia",
+    "Nauru", "Nepal", "Netherlands", "New Zealand", "Nicaragua", "Niger", "Nigeria", "Norway",
+    "Oman", "Pakistan", "Palau", "Panama", "Papua New Guinea", "Paraguay", "Peru", "Philippines",
+    "Poland", "Portugal", "Qatar", "Romania", "Russia", "Rwanda", "Saint Kitts and Nevis",
+    "Saint Lucia", "Saint Vincent and the Grenadines", "Samoa", "San Marino", "Sao Tome and Principe",
+    "Saudi Arabia", "Senegal", "Serbia", "Seychelles", "Sierra Leone", "Singapore", "Slovakia",
+    "Slovenia", "Solomon Islands", "Somalia", "South Africa", "Spain", "Sri Lanka", "Sudan",
+    "Suriname", "Swaziland", "Sweden", "Switzerland", "Syria", "Taiwan", "Tajikistan", "Tanzania",
+    "Thailand", "Togo", "Tonga", "Trinidad and Tobago", "Tunisia", "Turkey", "Turkmenistan",
+    "Tuvalu", "Uganda", "Ukraine", "United Arab Emirates", "United Kingdom", "United States",
+    "Uruguay", "Uzbekistan", "Vanuatu", "Vatican City", "Venezuela", "Vietnam", "Yemen", "Zambia",
+    "Zimbabwe"
+]
 
 APPLICATION_PLAN_OPTIONS = ["casual", "normal", "intense"]
 

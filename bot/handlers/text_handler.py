@@ -1,12 +1,14 @@
-# =============================================================================
-# FILE: bot/handlers/text_handler.py - COMPLETE FINAL VERSION
-# =============================================================================
 import logging
 import asyncio
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes
-from bot.keyboards.menus import get_home_button, get_editable_fields_keyboard
+from bot.keyboards.menus import (
+    get_home_button,
+    get_editable_fields_keyboard,
+    get_country_suggestions,
+    get_continue_or_home_keyboard
+)
 from bot.validators.input_validators import (
     validate_subscription_date,
     validate_date_format,
@@ -14,6 +16,7 @@ from bot.validators.input_validators import (
     get_field_prompt
 )
 from bot.formatters.display import format_nested_array
+from bot.handlers.skills_handler import handle_skills_add, handle_skills_remove
 from database.queries import (
     update_applicant,
     archive_applicant,
@@ -747,3 +750,203 @@ async def handle_restore_action(update: Update, text: str):
         )
     
     state_manager.clear_state(user_id)
+
+
+async def handle_cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cancel command to abort current operation."""
+    user_id = update.message.from_user.id
+    state = state_manager.get_state(user_id)
+    
+    if not state:
+        await update.message.reply_text(
+            "Nothing to cancel. Use /start to begin.",
+            reply_markup=get_home_button()
+        )
+        return
+    
+    state_manager.clear_state(user_id)
+    await update.message.reply_text(
+        "✅ Operation cancelled.",
+        reply_markup=get_home_button()
+    )
+
+
+async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle all text input based on user state."""
+    user_id = update.message.from_user.id
+    text = update.message.text.strip()
+    
+    state = state_manager.get_state(user_id)
+    if not state:
+        return
+    
+    action = state.get("action")
+    step = state.get("step")
+    
+    # Check for cancel
+    if text.lower() == '/cancel':
+        await handle_cancel_command(update, context)
+        return
+    
+    # Route based on action and step
+    if action == "find":
+        await handle_find_action(update, text)
+    elif action == "mark_done":
+        await handle_mark_done_action(update, text)
+    elif action == "mark_pending":
+        await handle_mark_pending_action(update, text)
+    elif action == "set_sub":
+        await handle_set_subscription_action(update, text, state)
+    elif action == "extend_sub":
+        await handle_extend_subscription_action(update, text, state)
+    elif action == "edit_field":
+        # Handle different edit steps
+        if step == "identify":
+            await handle_edit_identify(update, text)
+        elif step == "text_input":
+            await handle_text_field_update(update, text, state)
+        elif step == "number_input":
+            await handle_number_input(update, text, state)
+        elif step == "country_select":
+            await handle_country_typing(update, text, state)
+        elif step == "nested_input":
+            await process_nested_field_input(update, text, state)
+        elif step == "skills_add":
+            await handle_skills_add(update, text, state)
+        elif step == "skills_remove":
+            await handle_skills_remove(update, text, state)
+    elif action == "archive":
+        await handle_archive_action(update, text)
+    elif action == "restore":
+        await handle_restore_action(update, text)
+
+
+async def handle_edit_identify(update: Update, text: str):
+    """Handle applicant identification for editing."""
+    user_id = update.message.from_user.id
+    
+    field, value = resolve_lookup(text)
+    applicant = await get_applicant(field, value)
+    
+    if not applicant:
+        await update.message.reply_text(
+            "❌ Applicant not found.",
+            reply_markup=get_home_button()
+        )
+        state_manager.clear_state(user_id)
+        return
+    
+    state_manager.update_state(user_id, {
+        "step": "choose_field",
+        "lookup_field": field,
+        "lookup_value": value,
+        "applicant": applicant
+    })
+    
+    await update.message.reply_text(
+        "🧩 *Select field to edit:*",
+        reply_markup=get_editable_fields_keyboard(),
+        parse_mode="Markdown"
+    )
+
+
+async def handle_text_field_update(update: Update, text: str, state: dict):
+    """Handle simple text field updates."""
+    user_id = update.message.from_user.id
+    col = state["column"]
+    lookup_field = state["lookup_field"]
+    lookup_value = state["lookup_value"]
+    
+    success = await update_applicant(lookup_field, lookup_value, {col: text})
+    
+    if success:
+        await update.message.reply_text(
+            f"✅ *{EDITABLE_FIELDS.get(col, col)} updated successfully!*",
+            reply_markup=get_continue_or_home_keyboard(),
+            parse_mode="Markdown"
+        )
+        # Don't clear state - let user continue
+    else:
+        await update.message.reply_text(
+            "❌ Error updating field",
+            reply_markup=get_home_button()
+        )
+        state_manager.clear_state(user_id)
+
+
+async def handle_number_input(update: Update, text: str, state: dict):
+    """Handle number input with validation."""
+    user_id = update.message.from_user.id
+    col = state["column"]
+    min_val = state.get("min", 0)
+    max_val = state.get("max", 999999)
+    
+    try:
+        number = int(text)
+        
+        if number < min_val or number > max_val:
+            await update.message.reply_text(
+                f"❌ Please enter a number between {min_val} and {max_val}.\n\n"
+                f"Send /cancel to abort.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        lookup_field = state["lookup_field"]
+        lookup_value = state["lookup_value"]
+        
+        success = await update_applicant(lookup_field, lookup_value, {col: number})
+        
+        if success:
+            await update.message.reply_text(
+                f"✅ *{EDITABLE_FIELDS.get(col, col)} updated to: {number}*",
+                reply_markup=get_continue_or_home_keyboard(),
+                parse_mode="Markdown"
+            )
+            # Don't clear state
+        else:
+            await update.message.reply_text(
+                "❌ Error updating field",
+                reply_markup=get_home_button()
+            )
+            state_manager.clear_state(user_id)
+        
+    except ValueError:
+        await update.message.reply_text(
+            f"❌ Invalid number. Please enter a valid number.\n\n"
+            f"Send /cancel to abort.",
+            parse_mode="Markdown"
+        )
+
+
+async def handle_country_typing(update: Update, text: str, state: dict):
+    """Handle country typing with autocomplete suggestions."""
+    user_id = update.message.from_user.id
+    
+    # Check if user typed a country name
+    from config.settings import COUNTRIES_LIST
+    
+    # Find matching countries
+    matches = [c for c in COUNTRIES_LIST if c.lower().startswith(text.lower())]
+    
+    if not matches:
+        await update.message.reply_text(
+            f"❌ No countries found starting with '{text}'.\n\n"
+            f"Please try again or send /cancel to abort.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Show suggestions
+    keyboard = get_country_suggestions(text)
+    
+    selected = state.get("selected_countries", [])
+    selected_text = ", ".join(selected) if selected else "None yet"
+    
+    await update.message.reply_text(
+        f"🌍 *Country Selection*\n\n"
+        f"Selected: {selected_text}\n\n"
+        f"Choose from suggestions:",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
