@@ -1,0 +1,28 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies + development tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    vim \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install development dependencies
+RUN pip install --no-cache-dir \
+    ipython \
+    pytest \
+    black \
+    flake8
+
+# Copy project
+COPY . .
+
+# Don't create user in dev for easier debugging
+# Keep as root for development flexibility
+
+CMD ["python", "main.py"]

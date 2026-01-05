@@ -1,0 +1,18 @@
+from .start import register_start_handlers
+from .view import register_view_handlers
+from .edit import register_edit_handlers
+from .payment import register_payment_handlers
+from .subscription import register_subscription_handlers
+from .archive import register_archive_handlers
+from .stats import register_stats_handlers
+
+
+def register_all_handlers(application):
+    """Register all bot handlers."""
+    register_start_handlers(application)
+    register_view_handlers(application)
+    register_edit_handlers(application)
+    register_payment_handlers(application)
+    register_subscription_handlers(application)
+    register_archive_handlers(application)
+    register_stats_handlers(application)
