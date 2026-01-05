@@ -339,13 +339,19 @@ async def handle_boolean_selection(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer()
     
+    user_id = query.from_user.id
     _, value, field_name = query.data.split(":", 2)
     bool_value = value == "true"
+    
+    state = state_manager.get_state(user_id)
+    if not state:
+        return
     
     # Import here to avoid circular import
     from bot.handlers.text_handler import process_nested_field_input
     
-    await process_nested_field_input(update, str(bool_value), state_manager.get_state(query.from_user.id))
+    # Pass the boolean value as string and let it be processed
+    await process_nested_field_input(update, str(bool_value), state)
 
 
 async def handle_proficiency_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):

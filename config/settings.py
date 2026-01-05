@@ -60,7 +60,7 @@ NESTED_FIELD_STRUCTURES = {
             "start": "date",
             "end": "date"
         },
-        "optional": ["end", "start", "description"]
+        "optional": ["end", "start"]
     },
     "education": {
         "fields": ["degree", "field", "school", "start", "end"],

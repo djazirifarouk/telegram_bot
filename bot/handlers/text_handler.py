@@ -1,5 +1,5 @@
 # =============================================================================
-# FILE: bot/handlers/text_handler.py
+# FILE: bot/handlers/text_handler.py - COMPLETE FINAL VERSION
 # =============================================================================
 import logging
 import asyncio
@@ -7,15 +7,30 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes
 from bot.keyboards.menus import get_home_button, get_editable_fields_keyboard
-from bot.validators.input_validators import validate_subscription_date, validate_date_format, is_field_optional, get_field_prompt
+from bot.validators.input_validators import (
+    validate_subscription_date,
+    validate_date_format,
+    is_field_optional,
+    get_field_prompt
+)
 from bot.formatters.display import format_nested_array
-from database.queries import update_applicant, archive_applicant, restore_applicant, get_applicant
+from database.queries import (
+    update_applicant,
+    archive_applicant,
+    restore_applicant,
+    get_applicant,
+    download_file_from_storage
+)
 from utils.helpers import resolve_lookup
 from utils.state_manager import state_manager
 from config.settings import EDITABLE_FIELDS, NESTED_FIELD_STRUCTURES
 
 logger = logging.getLogger(__name__)
 
+
+# =============================================================================
+# MAIN TEXT INPUT ROUTER
+# =============================================================================
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle all text input based on user state."""
@@ -46,6 +61,10 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "restore":
         await handle_restore_action(update, text)
 
+
+# =============================================================================
+# FIND APPLICANT
+# =============================================================================
 
 async def handle_find_action(update: Update, text: str):
     """Handle finding an applicant."""
@@ -83,8 +102,6 @@ async def handle_find_action(update: Update, text: str):
 
 async def send_applicant_details(update: Update, a: dict):
     """Send formatted applicant details."""
-    from database.queries import download_file_from_storage
-    
     # Header
     await update.message.reply_text(
         f"🚨 *APPLICANT DETAILS*\n\n"
@@ -265,6 +282,10 @@ async def send_applicant_details(update: Update, a: dict):
     )
 
 
+# =============================================================================
+# PAYMENT MANAGEMENT
+# =============================================================================
+
 async def handle_mark_done_action(update: Update, text: str):
     """Handle marking payment as done."""
     user_id = update.message.from_user.id
@@ -323,13 +344,16 @@ async def handle_mark_pending_action(update: Update, text: str):
     state_manager.clear_state(user_id)
 
 
+# =============================================================================
+# SUBSCRIPTION MANAGEMENT
+# =============================================================================
+
 async def handle_set_subscription_action(update: Update, text: str, state: dict):
     """Handle setting subscription date."""
     user_id = update.message.from_user.id
     step = state.get("step")
     
     if step == "email":
-        # Store email and ask for date
         state_manager.update_state(user_id, {"step": "date", "email": text})
         await update.message.reply_text(
             f"📅 Email: `{text}`\n\nNow send the subscription expiration date (YYYY-MM-DD):",
@@ -337,7 +361,6 @@ async def handle_set_subscription_action(update: Update, text: str, state: dict)
         )
     
     elif step == "date":
-        # Validate and update subscription
         is_valid, error_msg = validate_subscription_date(text)
         
         if not is_valid:
@@ -373,7 +396,6 @@ async def handle_extend_subscription_action(update: Update, text: str, state: di
     step = state.get("step")
     
     if step == "email":
-        # Store email and ask for days
         state_manager.update_state(user_id, {"step": "days", "email": text})
         await update.message.reply_text(
             f"➕ Email: `{text}`\n\nNow send the number of days to extend:",
@@ -381,14 +403,12 @@ async def handle_extend_subscription_action(update: Update, text: str, state: di
         )
     
     elif step == "days":
-        # Validate and extend subscription
         email = state.get("email")
         
         try:
             days = int(text)
             field, value = resolve_lookup(email)
             
-            # Get current subscription
             applicant = await get_applicant(field, value)
             
             if not applicant:
@@ -410,11 +430,9 @@ async def handle_extend_subscription_action(update: Update, text: str, state: di
                 state_manager.clear_state(user_id)
                 return
             
-            # Calculate new expiration
             current_exp = datetime.strptime(current_exp_str, "%Y-%m-%d")
             new_exp = (current_exp + timedelta(days=days)).date()
             
-            # Update database
             success = await update_applicant(field, value, {"subscription_expiration": new_exp.isoformat()})
             
             if success:
@@ -446,13 +464,16 @@ async def handle_extend_subscription_action(update: Update, text: str, state: di
         state_manager.clear_state(user_id)
 
 
+# =============================================================================
+# EDIT FIELD
+# =============================================================================
+
 async def handle_edit_field_action(update: Update, text: str, state: dict):
     """Handle editing field value."""
     user_id = update.message.from_user.id
     step = state.get("step")
     
     if step == "identify":
-        # Identify applicant
         field, value = resolve_lookup(text)
         applicant = await get_applicant(field, value)
         
@@ -478,7 +499,6 @@ async def handle_edit_field_action(update: Update, text: str, state: dict):
         )
     
     elif step == "edit_value":
-        # Update simple field
         col = state["column"]
         lookup_field = state["lookup_field"]
         lookup_value = state["lookup_value"]
@@ -500,13 +520,16 @@ async def handle_edit_field_action(update: Update, text: str, state: dict):
         state_manager.clear_state(user_id)
     
     elif step == "nested_input":
-        # Handle nested field input
         await process_nested_field_input(update, text, state)
 
 
+# =============================================================================
+# NESTED FIELD INPUT PROCESSING
+# =============================================================================
+
 async def process_nested_field_input(update: Update, text: str, state: dict):
     """Process input for nested field creation/editing with validation."""
-    user_id = update.message.from_user.id
+    user_id = update.effective_user.id
     
     field_type = state["nested_type"]
     structure = NESTED_FIELD_STRUCTURES[field_type]
@@ -526,7 +549,11 @@ async def process_nested_field_input(update: Update, text: str, state: dict):
         
         if not is_valid:
             retry_prompt = f"❌ {error_msg}\n\n{get_field_prompt(field_type, current_field, labels)}"
-            await update.message.reply_text(retry_prompt, parse_mode="Markdown")
+            
+            if update.callback_query:
+                await update.callback_query.message.reply_text(retry_prompt, parse_mode="Markdown")
+            else:
+                await update.message.reply_text(retry_prompt, parse_mode="Markdown")
             return
     
     # Store the input
@@ -536,9 +563,9 @@ async def process_nested_field_input(update: Update, text: str, state: dict):
     next_field_idx = current_field_idx + 1
     
     if next_field_idx < len(fields):
-        # More fields to collect
         state_manager.update_state(user_id, {"nested_field_index": next_field_idx})
         next_field = fields[next_field_idx]
+        next_label = labels[next_field]
         
         # Get current value if editing
         current_val = ""
@@ -549,18 +576,74 @@ async def process_nested_field_input(update: Update, text: str, state: dict):
             if entry_idx < len(current_data):
                 current_val = current_data[entry_idx].get(next_field, "")
         
+        # Check if next field is boolean or select
+        if next_field in field_types:
+            if field_types[next_field] == "boolean":
+                from bot.keyboards.menus import get_boolean_keyboard
+                
+                prompt = f"Select *{next_label}*:"
+                if current_val:
+                    prompt = f"Current: *{current_val}*\n\n{prompt}"
+                
+                keyboard = get_boolean_keyboard(next_field)
+                
+                if update.callback_query:
+                    await update.callback_query.message.edit_text(
+                        prompt,
+                        reply_markup=keyboard,
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await update.message.reply_text(
+                        prompt,
+                        reply_markup=keyboard,
+                        parse_mode="Markdown"
+                    )
+                return
+                
+            elif field_types[next_field] == "select" and next_field == "proficiency":
+                from bot.keyboards.menus import get_proficiency_keyboard
+                
+                prompt = f"Select *{next_label}*:"
+                if current_val:
+                    prompt = f"Current: *{current_val}*\n\n{prompt}"
+                
+                keyboard = get_proficiency_keyboard()
+                
+                if update.callback_query:
+                    await update.callback_query.message.edit_text(
+                        prompt,
+                        reply_markup=keyboard,
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await update.message.reply_text(
+                        prompt,
+                        reply_markup=keyboard,
+                        parse_mode="Markdown"
+                    )
+                return
+        
+        # Regular text field
         prompt = get_field_prompt(field_type, next_field, labels, is_editing=bool(current_val), current_value=current_val)
-        await update.message.reply_text(prompt, parse_mode="Markdown")
+        
+        if update.callback_query:
+            await update.callback_query.message.reply_text(prompt, parse_mode="Markdown")
+        else:
+            await update.message.reply_text(prompt, parse_mode="Markdown")
     else:
         # All fields collected, save to database
         lookup_field = state["lookup_field"]
         lookup_value = state["lookup_value"]
         nested_action = state["nested_action"]
         
-        # Get current data
         applicant = await get_applicant(lookup_field, lookup_value)
         if not applicant:
-            await update.message.reply_text("❌ Applicant not found.")
+            message_text = "❌ Applicant not found."
+            if update.callback_query:
+                await update.callback_query.message.reply_text(message_text)
+            else:
+                await update.message.reply_text(message_text)
             state_manager.clear_state(user_id)
             return
         
@@ -568,7 +651,6 @@ async def process_nested_field_input(update: Update, text: str, state: dict):
         if not isinstance(current_data, list):
             current_data = []
         
-        # Add or edit entry
         if nested_action == "add":
             current_data.append(state["nested_data"])
         elif nested_action == "edit":
@@ -576,17 +658,36 @@ async def process_nested_field_input(update: Update, text: str, state: dict):
             if entry_index < len(current_data):
                 current_data[entry_index] = state["nested_data"]
         
-        # Update database
         success = await update_applicant(lookup_field, lookup_value, {field_type: current_data})
         
         if success:
             success_msg = f"✅ *{EDITABLE_FIELDS[field_type]} {'added' if nested_action == 'add' else 'updated'} successfully!*"
-            await update.message.reply_text(success_msg, reply_markup=get_home_button(), parse_mode="Markdown")
+            
+            if update.callback_query:
+                await update.callback_query.message.reply_text(
+                    success_msg,
+                    reply_markup=get_home_button(),
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text(
+                    success_msg,
+                    reply_markup=get_home_button(),
+                    parse_mode="Markdown"
+                )
         else:
-            await update.message.reply_text("❌ Error updating data", reply_markup=get_home_button())
+            error_msg = "❌ Error updating data"
+            if update.callback_query:
+                await update.callback_query.message.reply_text(error_msg, reply_markup=get_home_button())
+            else:
+                await update.message.reply_text(error_msg, reply_markup=get_home_button())
         
         state_manager.clear_state(user_id)
 
+
+# =============================================================================
+# ARCHIVE MANAGEMENT
+# =============================================================================
 
 async def handle_archive_action(update: Update, text: str):
     """Handle archiving applicant."""
