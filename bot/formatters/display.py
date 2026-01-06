@@ -13,7 +13,7 @@ def format_nested_array(data_list: list, field_type: str) -> str:
         Formatted string for display
     """
     if not data_list:
-        return "None"
+        return "-"
     
     structure = NESTED_FIELD_STRUCTURES.get(field_type, {})
     labels = structure.get("labels", {})

@@ -60,7 +60,7 @@ async def handle_skills_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     elif action == "view":
         if not current_skills:
-            skills_display = "None"
+            skills_display = "-"
         else:
             skills_display = "\n".join([f"• {skill}" for skill in current_skills])
         
@@ -69,7 +69,6 @@ async def handle_skills_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=get_back_button("back_to_fields"),
             parse_mode="Markdown"
         )
-
 
 async def handle_skills_add(update: Update, text: str, state: dict):
     """Handle adding skills."""
@@ -106,16 +105,16 @@ async def handle_skills_add(update: Update, text: str, state: dict):
         await update.message.reply_text(
             f"✅ *Skills added!*\n\nAdded: {added_text}\n\n"
             f"Total skills: {len(current_skills)}",
-            reply_markup=get_home_button(),
+            reply_markup=get_continue_or_home_keyboard(),
             parse_mode="Markdown"
         )
+        # DON'T clear state
     else:
         await update.message.reply_text(
             "❌ Error updating skills",
             reply_markup=get_home_button()
         )
-    
-    state_manager.clear_state(user_id)
+        state_manager.clear_state(user_id)
 
 
 async def handle_skills_remove(update: Update, text: str, state: dict):
@@ -164,16 +163,16 @@ async def handle_skills_remove(update: Update, text: str, state: dict):
         await update.message.reply_text(
             f"✅ *Skills removed!*\n\nRemoved: {removed_text}\n\n"
             f"Remaining skills: {len(current_skills)}",
-            reply_markup=get_home_button(),
+            reply_markup=get_continue_or_home_keyboard(),
             parse_mode="Markdown"
         )
+        # DON'T clear state
     else:
         await update.message.reply_text(
             "❌ Error updating skills",
             reply_markup=get_home_button()
         )
-    
-    state_manager.clear_state(user_id)
+        state_manager.clear_state(user_id)
 
 
 def register_skills_handlers(application):

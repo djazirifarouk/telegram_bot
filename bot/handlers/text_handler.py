@@ -45,8 +45,14 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     action = state.get("action")
+    step = state.get("step")
     
-    # Route to appropriate handler based on action
+    # Check for cancel
+    if text.lower() == '/cancel':
+        await handle_cancel_command(update, context)
+        return
+    
+    # Route based on action and step
     if action == "find":
         await handle_find_action(update, text)
     elif action == "mark_done":
@@ -58,7 +64,21 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "extend_sub":
         await handle_extend_subscription_action(update, text, state)
     elif action == "edit_field":
-        await handle_edit_field_action(update, text, state)
+        # Handle different edit steps
+        if step == "identify":
+            await handle_edit_identify(update, text)
+        elif step == "text_input":
+            await handle_text_field_update(update, text, state)
+        elif step == "number_input":
+            await handle_number_input(update, text, state)
+        elif step == "country_select":  # ADD THIS
+            await handle_country_typing(update, text, state)
+        elif step == "nested_input":
+            await process_nested_field_input(update, text, state)
+        elif step == "skills_add":
+            await handle_skills_add(update, text, state)
+        elif step == "skills_remove":
+            await handle_skills_remove(update, text, state)
     elif action == "archive":
         await handle_archive_action(update, text)
     elif action == "restore":
@@ -104,7 +124,9 @@ async def handle_find_action(update: Update, text: str):
 
 
 async def send_applicant_details(update: Update, a: dict):
-    """Send formatted applicant details."""
+    """Send formatted applicant details - COMPLETE WITH ALL FIELDS."""
+    from database.queries import download_file_from_storage
+    
     # Header
     await update.message.reply_text(
         f"🚨 *APPLICANT DETAILS*\n\n"
@@ -115,7 +137,7 @@ async def send_applicant_details(update: Update, a: dict):
         parse_mode='Markdown'
     )
     
-    # Search Preferences
+    # Search Preferences & Application Info
     country_pref = a.get("country_preference")
     if isinstance(country_pref, list):
         country_text = ", ".join(country_pref) if country_pref else "-"
@@ -135,6 +157,21 @@ async def send_applicant_details(update: Update, a: dict):
     cv_file = await download_file_from_storage(a.get("cv_url"), "cv")
     if cv_file:
         await update.message.reply_document(document=cv_file, caption="📄 CV")
+    
+    # Profile Picture
+    picture_file = await download_file_from_storage(a.get("picture_url"), "pictures")
+    if picture_file:
+        await update.message.reply_document(document=picture_file, caption="📸 Profile Picture")
+    
+    # Recommendation Letters
+    rec_letters = a.get("recommendation_url", [])
+    if rec_letters and isinstance(rec_letters, list):
+        await update.message.reply_text(
+            f"📝 *Recommendation Letters*\n\n"
+            f"Total: {len(rec_letters)} letter(s)\n\n"
+            f"URLs:\n" + "\n".join([f"• {url}" for url in rec_letters]),
+            parse_mode="Markdown"
+        )
     
     # Contact Information
     await update.message.reply_text(
@@ -161,17 +198,23 @@ async def send_applicant_details(update: Update, a: dict):
         parse_mode='Markdown'
     )
     
-    # Legalisation
+    # Legalisation & Work Authorization
+    auth_countries = a.get("authorized_countries", [])
+    if isinstance(auth_countries, list):
+        auth_text = ", ".join(auth_countries) if auth_countries else "-"
+    else:
+        auth_text = auth_countries or "-"
+    
     await update.message.reply_text(
-        f"📝 *Legalisation*\n\n"
-        f"Authorized Countries: {a.get('autorized_countries','-')}\n"
+        f"📝 *Legalisation & Authorization*\n\n"
+        f"Authorized Countries: {auth_text}\n"
         f"Visa: {a.get('visa','-')}\n"
-        f"Willing to relocation: {a.get('relocate','-')}\n"
-        f"Total years of Experience: {a.get('experience','-')} years",
+        f"Willing to Relocate: {a.get('relocate','-')}\n"
+        f"Total Years of Experience: {a.get('experience','-')} years",
         parse_mode='Markdown'
     )
     
-    # Roles
+    # Roles/Work Experience
     roles = a.get("roles")
     if not roles:
         roles_text = "-"
@@ -188,7 +231,7 @@ async def send_applicant_details(update: Update, a: dict):
         roles_text = "\n\n".join(lines)
     
     await update.message.reply_text(
-        f"🎯 *Roles*\n\n{roles_text}",
+        f"🎯 *Work Experience*\n\n{roles_text}",
         parse_mode="Markdown"
     )
     
@@ -259,26 +302,32 @@ async def send_applicant_details(update: Update, a: dict):
         parse_mode="Markdown"
     )
     
-    # Compensation
+    # Achievements
+    achievements = a.get("achievements", "-")
+    await update.message.reply_text(
+        f"🏆 *Achievements*\n\n{achievements}",
+        parse_mode='Markdown'
+    )
+    
+    # Compensation & Salary
     await update.message.reply_text(
         f"💰 *Compensation Details*\n\n"
+        f"Current Salary: {a.get('current_salary_currency', a.get('expected_salary_currency', '-'))} {a.get('current_salary','-')}\n"
         f"Expected Salary: {a.get('expected_salary_currency','-')} {a.get('expected_salary','-')}\n"
-        f"Current Salary: {a.get('expected_salary_currency','-')} {a.get('current_salary','-')}\n"
+        f"Notice Period: {a.get('notice_period','-')} days\n"
         f"Payment Status: {a.get('payment','-')}",
         parse_mode='Markdown'
     )
     
-    # Achievements
+    # Subscription Info
+    sub_exp = a.get('subscription_expiration', '-')
     await update.message.reply_text(
-        f"🏆 *Achievements*\n\n{a.get('achievements','-')}",
+        f"📅 *Subscription*\n\n"
+        f"Expires: {sub_exp}",
         parse_mode='Markdown'
     )
     
-    # Profile picture
-    picture_file = await download_file_from_storage(a.get("picture_url"), "pictures")
-    if picture_file:
-        await update.message.reply_document(document=picture_file, caption="📸 Profile Picture")
-    
+    from bot.keyboards.menus import get_home_button
     await update.message.reply_text(
         "✅ All details sent!",
         reply_markup=get_home_button()
@@ -865,7 +914,7 @@ async def handle_text_field_update(update: Update, text: str, state: dict):
             reply_markup=get_continue_or_home_keyboard(),
             parse_mode="Markdown"
         )
-        # Don't clear state - let user continue
+        # DON'T clear state
     else:
         await update.message.reply_text(
             "❌ Error updating field",
@@ -903,7 +952,7 @@ async def handle_number_input(update: Update, text: str, state: dict):
                 reply_markup=get_continue_or_home_keyboard(),
                 parse_mode="Markdown"
             )
-            # Don't clear state
+            # DON'T clear state
         else:
             await update.message.reply_text(
                 "❌ Error updating field",
@@ -923,8 +972,10 @@ async def handle_country_typing(update: Update, text: str, state: dict):
     """Handle country typing with autocomplete suggestions."""
     user_id = update.message.from_user.id
     
-    # Check if user typed a country name
+    # Import here to avoid circular import
     from config.settings import COUNTRIES_LIST
+    from bot.keyboards.menus import get_country_suggestions
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     
     # Find matching countries
     matches = [c for c in COUNTRIES_LIST if c.lower().startswith(text.lower())]
@@ -937,8 +988,15 @@ async def handle_country_typing(update: Update, text: str, state: dict):
         )
         return
     
-    # Show suggestions
-    keyboard = get_country_suggestions(text)
+    # Show suggestions (max 10)
+    matches = matches[:10]
+    keyboard = []
+    for country in matches:
+        keyboard.append([InlineKeyboardButton(country, callback_data=f"country:{country}")])
+    
+    # Add done button
+    keyboard.append([InlineKeyboardButton("✅ Done Adding", callback_data="country:done")])
+    keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="back_to_fields")])
     
     selected = state.get("selected_countries", [])
     selected_text = ", ".join(selected) if selected else "None yet"
@@ -947,6 +1005,6 @@ async def handle_country_typing(update: Update, text: str, state: dict):
         f"🌍 *Country Selection*\n\n"
         f"Selected: {selected_text}\n\n"
         f"Choose from suggestions:",
-        reply_markup=keyboard,
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )

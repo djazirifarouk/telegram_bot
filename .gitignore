@@ -14,4 +14,3 @@ venv/
 .vscode/
 .idea/
 *.log
-*.yml

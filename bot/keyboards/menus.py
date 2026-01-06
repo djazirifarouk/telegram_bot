@@ -269,6 +269,6 @@ def get_continue_or_home_keyboard() -> InlineKeyboardMarkup:
     """Get keyboard to continue editing or go home."""
     keyboard = [
         [InlineKeyboardButton("✏️ Edit Another Field", callback_data="continue_edit")],
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="back")]
+        [InlineKeyboardButton("✅ Done (Main Menu)", callback_data="back")]
     ]
     return InlineKeyboardMarkup(keyboard)

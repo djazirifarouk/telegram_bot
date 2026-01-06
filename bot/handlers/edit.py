@@ -25,6 +25,7 @@ from bot.keyboards.menus import (
 )
 from bot.formatters.display import format_nested_array
 from bot.validators.input_validators import is_field_optional, get_field_prompt
+from bot.handlers.skills_handler import handle_skills_menu
 from database.queries import get_applicant, update_applicant
 from utils.helpers import resolve_lookup
 from utils.state_manager import state_manager
@@ -68,14 +69,29 @@ async def handle_edit_column_selection(update: Update, context: ContextTypes.DEF
     if not state:
         return
     
-    applicant = state.get("applicant", {})
+    # REFRESH applicant data from database
+    lookup_field = state.get("lookup_field")
+    lookup_value = state.get("lookup_value")
+    applicant = await get_applicant(lookup_field, lookup_value)
+    
+    if not applicant:
+        await query.message.edit_text(
+            "❌ Applicant not found.",
+            reply_markup=get_home_button()
+        )
+        state_manager.clear_state(user_id)
+        return
+    
+    # Update state with fresh data
+    state_manager.update_state(user_id, {"applicant": applicant})
+    
     current_value = applicant.get(col)
     
     # Format current value for display
     if isinstance(current_value, list):
-        current_display = ", ".join(str(v) for v in current_value) if current_value else "None"
+        current_display = ", ".join(str(v) for v in current_value) if current_value else "-"
     elif current_value is None:
-        current_display = "None"
+        current_display = "-"
     else:
         current_display = str(current_value)
     
@@ -144,8 +160,9 @@ async def handle_edit_column_selection(update: Update, context: ContextTypes.DEF
         
         current_list = current_value if isinstance(current_value, list) else []
         count = len(current_list)
-        current_text = ", ".join(current_list) if current_list else "None"
+        current_text = ", ".join(current_list) if current_list else "-"
         
+        from bot.keyboards.menus import get_countries_action_keyboard
         await query.message.edit_text(
             f"🌍 *{EDITABLE_FIELDS[col]}*\n\n"
             f"Current ({count}): {current_text}\n\n"
@@ -153,6 +170,7 @@ async def handle_edit_column_selection(update: Update, context: ContextTypes.DEF
             reply_markup=get_countries_action_keyboard(),
             parse_mode="Markdown"
         )
+        return
     
     # Visa (Yes/No)
     elif col == "visa":
@@ -317,13 +335,15 @@ async def handle_plan_selection(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=get_continue_or_home_keyboard(),
             parse_mode="Markdown"
         )
+        # DON'T clear state - keep it for continue editing
     else:
         await query.message.edit_text(
             "❌ Error updating application plan",
-            reply_markup=get_continue_or_home_keyboard()
+            reply_markup=get_home_button()
         )
-    
-    state_manager.clear_state(user_id)
+        state_manager.clear_state(user_id)
+
+
 
 
 # ==================== NESTED FIELD HANDLERS ====================
@@ -591,12 +611,9 @@ async def handle_yesno_selection(update: Update, context: ContextTypes.DEFAULT_T
     else:
         await query.message.edit_text(
             "❌ Error updating field",
-            reply_markup=get_continue_or_home_keyboard()
+            reply_markup=get_home_button()
         )
-    
-    state_manager.clear_state(user_id)
-
-
+        state_manager.clear_state(user_id)
 async def handle_employment_type_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle employment type selection."""
     query = update.callback_query
@@ -623,10 +640,9 @@ async def handle_employment_type_selection(update: Update, context: ContextTypes
     else:
         await query.message.edit_text(
             "❌ Error updating field",
-            reply_markup=get_continue_or_home_keyboard()
+            reply_markup=get_home_button()
         )
-    
-    state_manager.clear_state(user_id)
+        state_manager.clear_state(user_id)
 
 
 async def handle_search_accuracy_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -655,10 +671,9 @@ async def handle_search_accuracy_selection(update: Update, context: ContextTypes
     else:
         await query.message.edit_text(
             "❌ Error updating field",
-            reply_markup=get_continue_or_home_keyboard()
+            reply_markup=get_home_button()
         )
-    
-    state_manager.clear_state(user_id)
+        state_manager.clear_state(user_id)
 
 
 async def handle_currency_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -687,10 +702,9 @@ async def handle_currency_selection(update: Update, context: ContextTypes.DEFAUL
     else:
         await query.message.edit_text(
             "❌ Error updating field",
-            reply_markup=get_continue_or_home_keyboard()
+            reply_markup=get_home_button()
         )
-    
-    state_manager.clear_state(user_id)
+        state_manager.clear_state(user_id)
 
 
 async def handle_back_to_fields(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -742,6 +756,7 @@ async def handle_country_selection(update: Update, context: ContextTypes.DEFAULT
         col = state.get("column")
         current_countries = applicant.get(col, [])
         
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         keyboard = [
             [InlineKeyboardButton(f"{'✅ ' if c in selected else ''}{c}", callback_data=f"country_rm:{c}")]
             for c in current_countries
@@ -760,20 +775,30 @@ async def handle_country_selection(update: Update, context: ContextTypes.DEFAULT
     data = query.data.split("country:", 1)[1]
     state = state_manager.get_state(user_id)
     if not state:
+        logger.error("No state found in handle_country_selection")
         return
     
     if data == "done":
-        col = state["column"]
+        col = state.get("column")
         selected_countries = state.get("selected_countries", [])
-        lookup_field = state["lookup_field"]
-        lookup_value = state["lookup_value"]
+        lookup_field = state.get("lookup_field")
+        lookup_value = state.get("lookup_value")
         action_type = state.get("action_type", "add")
         
-        # Get current countries
+        logger.info(f"Saving countries - Column: {col}, Action: {action_type}, Selected: {selected_countries}")
+        
+        # Get FRESH current countries from database (don't trust state)
         applicant = await get_applicant(lookup_field, lookup_value)
+        if not applicant:
+            await query.message.edit_text("❌ Applicant not found.")
+            state_manager.clear_state(user_id)
+            return
+        
         current_countries = applicant.get(col, [])
         if not isinstance(current_countries, list):
             current_countries = []
+        
+        logger.info(f"Current countries in DB: {current_countries}")
         
         # Add or remove
         if action_type == "add":
@@ -787,17 +812,30 @@ async def handle_country_selection(update: Update, context: ContextTypes.DEFAULT
                     current_countries.remove(country)
             action_text = "removed"
         
+        logger.info(f"New countries list: {current_countries}")
+        
         if not selected_countries:
+            from bot.keyboards.menus import get_back_button
             await query.message.edit_text(
-                f"❌ No countries {action_text}.",
+                f"❌ No countries selected to {action_type}.",
                 reply_markup=get_back_button("back_to_fields")
             )
             return
         
+        # Update database
+        logger.info(f"Updating database - Field: {col}, Value: {current_countries}")
         success = await update_applicant(lookup_field, lookup_value, {col: current_countries})
         
         if success:
+            logger.info(f"Database update successful!")
+            
+            # Verify the update
+            verify_applicant = await get_applicant(lookup_field, lookup_value)
+            verify_countries = verify_applicant.get(col, [])
+            logger.info(f"Verification - Countries after update: {verify_countries}")
+            
             changes = ", ".join(selected_countries)
+            from bot.keyboards.menus import get_continue_or_home_keyboard
             await query.message.edit_text(
                 f"✅ *Countries {action_text}!*\n\n"
                 f"{changes}\n\n"
@@ -805,11 +843,15 @@ async def handle_country_selection(update: Update, context: ContextTypes.DEFAULT
                 reply_markup=get_continue_or_home_keyboard(),
                 parse_mode="Markdown"
             )
-            # Don't clear state - let user continue editing
+            
+            # Refresh applicant data in state
+            state_manager.update_state(user_id, {"applicant": verify_applicant})
         else:
+            logger.error(f"Database update FAILED!")
+            from bot.keyboards.menus import get_home_button
             await query.message.edit_text(
-                "❌ Error updating countries",
-                reply_markup=get_continue_or_home_keyboard()
+                "❌ Error updating countries. Check logs for details.",
+                reply_markup=get_home_button()
             )
             state_manager.clear_state(user_id)
     else:
@@ -821,11 +863,25 @@ async def handle_country_selection(update: Update, context: ContextTypes.DEFAULT
         
         selected_text = ", ".join(selected_countries)
         
+        logger.info(f"Country added to selection: {data}. Total selected: {selected_countries}")
+        
+        # Show message to continue typing or click done
         await query.message.edit_text(
-            f"✅ *Added: {data}*\n\n"
-            f"Selected: {selected_text}\n\n"
-            f"Type another country name or click 'Done Adding'.",
+            f"✅ *Added to selection: {data}*\n\n"
+            f"Currently selected: {selected_text}\n\n"
+            f"Type another country name to add more, or click the button below.",
             parse_mode="Markdown"
+        )
+        
+        # Send new message with done button
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        keyboard = [
+            [InlineKeyboardButton("✅ Done Adding", callback_data="country:done")],
+            [InlineKeyboardButton("🔙 Cancel", callback_data="back_to_fields")]
+        ]
+        await query.message.reply_text(
+            "Continue?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
 
@@ -853,17 +909,21 @@ async def handle_countries_action(update: Update, context: ContextTypes.DEFAULT_
             "selected_countries": [],
             "action_type": "add"
         })
+        
+        current_text = ", ".join(current_countries) if current_countries else "-"
+        
         await query.message.edit_text(
             f"➕ *Add Countries*\n\n"
-            f"Current: {', '.join(current_countries) if current_countries else 'None'}\n\n"
-            "Type a country name to see suggestions.\n"
-            "You can add multiple countries.\n\n"
-            "Send /cancel to abort.",
+            f"Current ({len(current_countries)}): {current_text}\n\n"
+            f"Type a country name (e.g., 'tun' for Tunisia)\n"
+            f"You'll see suggestions to choose from.\n\n"
+            f"Send /cancel to abort.",
             parse_mode="Markdown"
         )
     
     elif action == "remove":
         if not current_countries:
+            from bot.keyboards.menus import get_back_button
             await query.message.edit_text(
                 "❌ No countries to remove.",
                 reply_markup=get_back_button("back_to_fields")
@@ -877,6 +937,7 @@ async def handle_countries_action(update: Update, context: ContextTypes.DEFAULT_
         })
         
         # Create keyboard with current countries
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         keyboard = [
             [InlineKeyboardButton(country, callback_data=f"country_rm:{country}")]
             for country in current_countries
@@ -893,12 +954,13 @@ async def handle_countries_action(update: Update, context: ContextTypes.DEFAULT_
     
     elif action == "view":
         if not current_countries:
-            countries_display = "None"
+            countries_display = "-"
         else:
             countries_display = "\n".join([f"• {c}" for c in current_countries])
         
+        from bot.keyboards.menus import get_back_button
         await query.message.edit_text(
-            f"📋 *Current Countries*\n\n{countries_display}",
+            f"📋 *Current Countries ({len(current_countries)})*\n\n{countries_display}",
             reply_markup=get_back_button("back_to_fields"),
             parse_mode="Markdown"
         )
@@ -997,14 +1059,30 @@ async def handle_continue_edit(update: Update, context: ContextTypes.DEFAULT_TYP
     if not state:
         await query.message.edit_text(
             "❌ Session expired. Please start again.",
-            reply_markup=get_continue_or_home_keyboard()
+            reply_markup=get_home_button()
         )
         return
     
-    # Keep the applicant info but reset to field selection
-    state_manager.update_state(user_id, {"step": "choose_field"})
+    # IMPORTANT: Refresh applicant data from database
+    lookup_field = state.get("lookup_field")
+    lookup_value = state.get("lookup_value")
     
-    applicant = state.get("applicant", {})
+    # Get fresh data from database
+    applicant = await get_applicant(lookup_field, lookup_value)
+    if not applicant:
+        await query.message.edit_text(
+            "❌ Applicant not found.",
+            reply_markup=get_home_button()
+        )
+        state_manager.clear_state(user_id)
+        return
+    
+    # Update state with fresh data
+    state_manager.update_state(user_id, {
+        "step": "choose_field",
+        "applicant": applicant  # Fresh data from DB
+    })
+    
     name = f"{applicant.get('first_name', '')} {applicant.get('last_name', '')}"
     
     await query.message.edit_text(
@@ -1016,16 +1094,31 @@ async def handle_continue_edit(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # Register all new handlers
 def register_edit_handlers(application):
-    """Register edit-related handlers."""
+    """Register edit-related handlers - COMPLETE VERSION."""
+    
+    # Main edit handlers
     application.add_handler(CallbackQueryHandler(start_edit_applicant, pattern="^edit_applicant$"))
     application.add_handler(CallbackQueryHandler(handle_edit_column_selection, pattern="^edit_col:"))
+    
+    # Menu selections
     application.add_handler(CallbackQueryHandler(handle_plan_selection, pattern="^plan:"))
     application.add_handler(CallbackQueryHandler(handle_yesno_selection, pattern="^yesno:"))
     application.add_handler(CallbackQueryHandler(handle_employment_type_selection, pattern="^emptype:"))
     application.add_handler(CallbackQueryHandler(handle_search_accuracy_selection, pattern="^accuracy:"))
     application.add_handler(CallbackQueryHandler(handle_currency_selection, pattern="^currency:"))
+    
+    # Submenu handlers - THESE WERE MISSING!
+    application.add_handler(CallbackQueryHandler(handle_social_selection, pattern="^social:"))
+    application.add_handler(CallbackQueryHandler(handle_general_selection, pattern="^general:"))
+    application.add_handler(CallbackQueryHandler(handle_countries_action, pattern="^countries:"))
+    application.add_handler(CallbackQueryHandler(handle_skills_menu, pattern="^skills:"))
+    
+    # Navigation
     application.add_handler(CallbackQueryHandler(handle_back_to_fields, pattern="^back_to_fields$"))
-    application.add_handler(CallbackQueryHandler(handle_country_selection, pattern="^country:"))
+    application.add_handler(CallbackQueryHandler(handle_continue_edit, pattern="^continue_edit$"))
+    
+    # Country selection (must be AFTER countries_action to avoid conflicts)
+    application.add_handler(CallbackQueryHandler(handle_country_selection, pattern="^country"))
     
     # Nested field handlers
     application.add_handler(CallbackQueryHandler(handle_nested_add, pattern="^nested_add:"))
@@ -1034,3 +1127,4 @@ def register_edit_handlers(application):
     application.add_handler(CallbackQueryHandler(handle_entry_selection, pattern="^entry_select:"))
     application.add_handler(CallbackQueryHandler(handle_boolean_selection, pattern="^bool:"))
     application.add_handler(CallbackQueryHandler(handle_proficiency_selection, pattern="^prof:"))
+

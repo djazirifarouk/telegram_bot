@@ -25,19 +25,19 @@ EDITABLE_FIELDS = {
     "application_plan": "Application Plan",
     "cv_url": "CV Document",
     "picture_url": "Profile Picture",
-    "recommendation_url": "Recommendation Letters",  # Array
-    "achievements": "Achievements",  # Text field
-    "authorized_countries": "Authorized Countries",  # Multiple choice
-    "visa": "Visa Status",  # Menu
-    "relocate": "Willing to Relocate",  # Menu
-    "experience": "Years of Experience",  # Number
-    "employment_type": "Employment Type",  # Menu
-    "search_accuracy": "Search Accuracy",  # Menu
-    "country_preference": "Country Preferences",  # Multiple choice
-    "socials": "Social Media Links",  # Submenu
-    "apply_role": "Applying For Role",  # Text
-    "general": "General Information",  # Submenu
-    "skills": "Skills",  # Array
+    "recommendation_url": "Recommendation Letters",
+    "achievements": "Achievements",
+    "authorized_countries": "Authorized Countries",  # ✅ CORRECT
+    "visa": "Visa Status",
+    "relocate": "Willing to Relocate",
+    "experience": "Years of Experience",
+    "employment_type": "Employment Type",
+    "search_accuracy": "Search Accuracy",
+    "country_preference": "Country Preferences",  # ✅ FIXED - removed 's'
+    "socials": "Social Media Links",
+    "apply_role": "Applying For Role",
+    "general": "General Information",
+    "skills": "Skills",
     "roles": "Roles",
     "education": "Education",
     "languages": "Languages",

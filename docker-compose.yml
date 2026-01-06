@@ -1,0 +1,45 @@
+# version: "3.9"
+
+# services:
+#   telegram-bot:
+#     build: .
+#     container_name: telegram-bot
+#     env_file: .env
+#     restart: unless-stopped
+
+
+version: "3.9"
+
+services:
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: telegram-applicant-bot
+    env_file: .env
+    restart: unless-stopped
+    
+    # Resource limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Network configuration (optional)
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
