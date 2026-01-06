@@ -127,15 +127,16 @@ async def send_applicant_details(update: Update, a: dict):
     """Send formatted applicant details - COMPLETE WITH ALL FIELDS."""
     from database.queries import download_file_from_storage
     
+    # Prepare all messages first (no await)
+    messages = []
     # Header
-    await update.message.reply_text(
+    messages.append((
         f"🚨 *APPLICANT DETAILS*\n\n"
         f"👤 {a.get('first_name', '-')} {a.get('last_name', '-')}\n"
         f"✒️ Plan: {a.get('application_plan', '-')}\n"
         f"📧 Alias: `{a.get('alias_email', '-')}`\n"
-        f"📧 Personal email: `{a.get('email', '-')}`",
-        parse_mode='Markdown'
-    )
+        f"📧 Personal email: `{a.get('email', '-')}`"
+    ))
     
     # Search Preferences & Application Info
     country_pref = a.get("country_preference")
@@ -144,14 +145,13 @@ async def send_applicant_details(update: Update, a: dict):
     else:
         country_text = country_pref or "-"
     
-    await update.message.reply_text(
+    messages.append((
         f"🔎 *Search Preferences*\n\n"
         f"Applying for: `{a.get('apply_role', '-')}`\n"
         f"Search AI Accuracy: `{a.get('search_accuracy', '-')}`\n"
         f"Employment Type: `{a.get('employment_type', '-')}`\n"
-        f"Country Preference: `{country_text}`",
-        parse_mode="Markdown"
-    )
+        f"Country Preference: `{country_text}`"
+    ))
     
     # CV
     cv_file = await download_file_from_storage(a.get("cv_url"), "cv")
@@ -166,15 +166,14 @@ async def send_applicant_details(update: Update, a: dict):
     # Recommendation Letters
     rec_letters = a.get("recommendation_url", [])
     if rec_letters and isinstance(rec_letters, list):
-        await update.message.reply_text(
+        messages.append((
             f"📝 *Recommendation Letters*\n\n"
             f"Total: {len(rec_letters)} letter(s)\n\n"
-            f"URLs:\n" + "\n".join([f"• {url}" for url in rec_letters]),
-            parse_mode="Markdown"
-        )
+            f"URLs:\n" + "\n".join([f"• {url}" for url in rec_letters])
+        ))
     
     # Contact Information
-    await update.message.reply_text(
+    messages.append((
         f"📞 *Contact Information*\n\n"
         f"Name: {a.get('first_name','-')} {a.get('last_name','-')}\n"
         f"Email: {a.get('email','-')}\n"
@@ -182,21 +181,19 @@ async def send_applicant_details(update: Update, a: dict):
         f"LinkedIn: {a.get('linkedin','-')}\n"
         f"X/Twitter: {a.get('twitter','-')}\n"
         f"GitHub: {a.get('github','-')}\n"
-        f"Portfolio: {a.get('website','-')}",
-        parse_mode='Markdown'
-    )
+        f"Portfolio: {a.get('website','-')}"
+    ))
     
     # Address Information
-    await update.message.reply_text(
+    messages.append((
         f"🏠 *Address Information*\n\n"
         f"Street: {a.get('street','-')}\n"
         f"Building No: {a.get('building','-')}\n"
         f"Apartment No: {a.get('apartment','-')}\n"
         f"City: {a.get('city','-')}\n"
         f"Country: {a.get('country','-')}\n"
-        f"Zip Code: {a.get('zip','-')}",
-        parse_mode='Markdown'
-    )
+        f"Zip Code: {a.get('zip','-')}"
+    ))
     
     # Legalisation & Work Authorization
     auth_countries = a.get("authorized_countries", [])
@@ -205,14 +202,13 @@ async def send_applicant_details(update: Update, a: dict):
     else:
         auth_text = auth_countries or "-"
     
-    await update.message.reply_text(
+    messages.append((
         f"📝 *Legalisation & Authorization*\n\n"
         f"Authorized Countries: {auth_text}\n"
         f"Visa: {a.get('visa','-')}\n"
         f"Willing to Relocate: {a.get('relocate','-')}\n"
-        f"Total Years of Experience: {a.get('experience','-')} years",
-        parse_mode='Markdown'
-    )
+        f"Total Years of Experience: {a.get('experience','-')} years"
+    ))
     
     # Roles/Work Experience
     roles = a.get("roles")
@@ -230,10 +226,9 @@ async def send_applicant_details(update: Update, a: dict):
             )
         roles_text = "\n\n".join(lines)
     
-    await update.message.reply_text(
-        f"🎯 *Work Experience*\n\n{roles_text}",
-        parse_mode="Markdown"
-    )
+    messages.append((
+        f"🎯 *Work Experience*\n\n{roles_text}"
+    ))
     
     # Education
     education = a.get("education")
@@ -249,10 +244,9 @@ async def send_applicant_details(update: Update, a: dict):
             )
         education_text = "\n\n".join(lines)
     
-    await update.message.reply_text(
-        f"🎓 *Education*\n\n{education_text}",
-        parse_mode="Markdown"
-    )
+    messages.append((
+        f"🎓 *Education*\n\n{education_text}"
+    ))
     
     # Certificates
     certificates = a.get("certificates")
@@ -268,10 +262,9 @@ async def send_applicant_details(update: Update, a: dict):
             )
         certificates_text = "\n\n".join(lines)
     
-    await update.message.reply_text(
-        f"📜 *Courses & Certificates*\n\n{certificates_text}",
-        parse_mode="Markdown"
-    )
+    messages.append((
+        f"📜 *Courses & Certificates*\n\n{certificates_text}"
+    ))
     
     # Languages
     languages = a.get("languages")
@@ -285,10 +278,9 @@ async def send_applicant_details(update: Update, a: dict):
             )
         languages_text = "\n".join(lines)
     
-    await update.message.reply_text(
-        f"🌍 *Languages*\n\n{languages_text}",
-        parse_mode="Markdown"
-    )
+    messages.append((
+        f"🌍 *Languages*\n\n{languages_text}"
+    ))
     
     # Skills
     skills = a.get("skills")
@@ -297,35 +289,36 @@ async def send_applicant_details(update: Update, a: dict):
     else:
         skills_text = skills or "-"
     
-    await update.message.reply_text(
-        f"🎯 *Skills*\n\n{skills_text}",
-        parse_mode="Markdown"
-    )
+    messages.append((
+        f"🎯 *Skills*\n\n{skills_text}"
+    ))
     
     # Achievements
     achievements = a.get("achievements", "-")
-    await update.message.reply_text(
-        f"🏆 *Achievements*\n\n{achievements}",
-        parse_mode='Markdown'
-    )
+    messages.append((
+        f"🏆 *Achievements*\n\n{achievements}"
+    ))
     
     # Compensation & Salary
-    await update.message.reply_text(
+    messages.append((
         f"💰 *Compensation Details*\n\n"
         f"Current Salary: {a.get('current_salary_currency', a.get('expected_salary_currency', '-'))} {a.get('current_salary','-')}\n"
         f"Expected Salary: {a.get('expected_salary_currency','-')} {a.get('expected_salary','-')}\n"
         f"Notice Period: {a.get('notice_period','-')} days\n"
-        f"Payment Status: {a.get('payment','-')}",
-        parse_mode='Markdown'
-    )
+        f"Payment Status: {a.get('payment','-')}"
+    ))
     
     # Subscription Info
     sub_exp = a.get('subscription_expiration', '-')
-    await update.message.reply_text(
+    messages.append((
         f"📅 *Subscription*\n\n"
-        f"Expires: {sub_exp}",
-        parse_mode='Markdown'
-    )
+        f"Expires: {sub_exp}"
+    ))
+
+    # Send all text messages quickly
+    for msg in messages:
+        await update.message.reply_text(msg, parse_mode='Markdown')
+        await asyncio.sleep(0.1)  # Small delay to avoid rate limits
     
     from bot.keyboards.menus import get_home_button
     await update.message.reply_text(

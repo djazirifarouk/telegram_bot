@@ -9,6 +9,7 @@ from database.queries import (
     get_applicant,
     download_file_from_storage
 )
+import asyncio
 from utils.helpers import resolve_lookup
 from utils.state_manager import state_manager
 
@@ -164,42 +165,57 @@ async def find_applicant_details(update: Update, text: str):
             reply_markup=get_home_button()
         )
 
-
 async def send_applicant_details(update: Update, a: dict):
-    """Send formatted applicant details."""
+    """Send formatted applicant details - COMPLETE WITH ALL FIELDS."""
+    from database.queries import download_file_from_storage
+    
+    # Prepare all messages first (no await)
+    messages = []
     # Header
-    await update.message.reply_text(
+    messages.append((
         f"🚨 *APPLICANT DETAILS*\n\n"
         f"👤 {a.get('first_name', '-')} {a.get('last_name', '-')}\n"
         f"✒️ Plan: {a.get('application_plan', '-')}\n"
         f"📧 Alias: `{a.get('alias_email', '-')}`\n"
-        f"📧 Personal email: `{a.get('email', '-')}`",
-        parse_mode='Markdown'
-    )
+        f"📧 Personal email: `{a.get('email', '-')}`"
+    ))
     
-    # Search Preferences
+    # Search Preferences & Application Info
     country_pref = a.get("country_preference")
     if isinstance(country_pref, list):
         country_text = ", ".join(country_pref) if country_pref else "-"
     else:
         country_text = country_pref or "-"
     
-    await update.message.reply_text(
+    messages.append((
         f"🔎 *Search Preferences*\n\n"
         f"Applying for: `{a.get('apply_role', '-')}`\n"
         f"Search AI Accuracy: `{a.get('search_accuracy', '-')}`\n"
         f"Employment Type: `{a.get('employment_type', '-')}`\n"
-        f"Country Preference: `{country_text}`",
-        parse_mode="Markdown"
-    )
+        f"Country Preference: `{country_text}`"
+    ))
     
     # CV
     cv_file = await download_file_from_storage(a.get("cv_url"), "cv")
     if cv_file:
         await update.message.reply_document(document=cv_file, caption="📄 CV")
     
+    # Profile Picture
+    picture_file = await download_file_from_storage(a.get("picture_url"), "pictures")
+    if picture_file:
+        await update.message.reply_document(document=picture_file, caption="📸 Profile Picture")
+    
+    # Recommendation Letters
+    rec_letters = a.get("recommendation_url", [])
+    if rec_letters and isinstance(rec_letters, list):
+        messages.append((
+            f"📝 *Recommendation Letters*\n\n"
+            f"Total: {len(rec_letters)} letter(s)\n\n"
+            f"URLs:\n" + "\n".join([f"• {url}" for url in rec_letters])
+        ))
+    
     # Contact Information
-    await update.message.reply_text(
+    messages.append((
         f"📞 *Contact Information*\n\n"
         f"Name: {a.get('first_name','-')} {a.get('last_name','-')}\n"
         f"Email: {a.get('email','-')}\n"
@@ -207,17 +223,151 @@ async def send_applicant_details(update: Update, a: dict):
         f"LinkedIn: {a.get('linkedin','-')}\n"
         f"X/Twitter: {a.get('twitter','-')}\n"
         f"GitHub: {a.get('github','-')}\n"
-        f"Portfolio: {a.get('website','-')}",
-        parse_mode='Markdown'
-    )
+        f"Portfolio: {a.get('website','-')}"
+    ))
     
-    # ... (Continue with other sections like roles, education, etc.)
-    # For brevity, I'm showing the pattern. The full implementation would include all sections.
+    # Address Information
+    messages.append((
+        f"🏠 *Address Information*\n\n"
+        f"Street: {a.get('street','-')}\n"
+        f"Building No: {a.get('building','-')}\n"
+        f"Apartment No: {a.get('apartment','-')}\n"
+        f"City: {a.get('city','-')}\n"
+        f"Country: {a.get('country','-')}\n"
+        f"Zip Code: {a.get('zip','-')}"
+    ))
     
+    # Legalisation & Work Authorization
+    auth_countries = a.get("authorized_countries", [])
+    if isinstance(auth_countries, list):
+        auth_text = ", ".join(auth_countries) if auth_countries else "-"
+    else:
+        auth_text = auth_countries or "-"
+    
+    messages.append((
+        f"📝 *Legalisation & Authorization*\n\n"
+        f"Authorized Countries: {auth_text}\n"
+        f"Visa: {a.get('visa','-')}\n"
+        f"Willing to Relocate: {a.get('relocate','-')}\n"
+        f"Total Years of Experience: {a.get('experience','-')} years"
+    ))
+    
+    # Roles/Work Experience
+    roles = a.get("roles")
+    if not roles:
+        roles_text = "-"
+    else:
+        lines = []
+        for r in roles:
+            lines.append(
+                f"• *{r.get('title','-')}* at {r.get('company','-')}\n"
+                f"  📍 {r.get('location','-')}\n"
+                f"  🗓️ {r.get('start','-')} → "
+                f"{'Present' if r.get('current') else r.get('end','-')}\n"
+                f"  📝 {r.get('description','-')}"
+            )
+        roles_text = "\n\n".join(lines)
+    
+    messages.append((
+        f"🎯 *Work Experience*\n\n{roles_text}"
+    ))
+    
+    # Education
+    education = a.get("education")
+    if not education:
+        education_text = "-"
+    else:
+        lines = []
+        for e in education:
+            lines.append(
+                f"• *{e.get('degree','-')}* — {e.get('field','-')}\n"
+                f"  🏫 {e.get('school','-')}\n"
+                f"  🗓️ {e.get('start','-')} → {e.get('end','-')}"
+            )
+        education_text = "\n\n".join(lines)
+    
+    messages.append((
+        f"🎓 *Education*\n\n{education_text}"
+    ))
+    
+    # Certificates
+    certificates = a.get("certificates")
+    if not certificates:
+        certificates_text = "-"
+    else:
+        lines = []
+        for c in certificates:
+            lines.append(
+                f"• *{c.get('name','-')}*\n"
+                f"  🆔 {c.get('number','-')}\n"
+                f"  🗓️ {c.get('start','-')} → {c.get('end','-')}"
+            )
+        certificates_text = "\n\n".join(lines)
+    
+    messages.append((
+        f"📜 *Courses & Certificates*\n\n{certificates_text}"
+    ))
+    
+    # Languages
+    languages = a.get("languages")
+    if not languages:
+        languages_text = "-"
+    else:
+        lines = []
+        for l in languages:
+            lines.append(
+                f"• *{l.get('language','-')}* — {l.get('proficiency','-')}"
+            )
+        languages_text = "\n".join(lines)
+    
+    messages.append((
+        f"🌍 *Languages*\n\n{languages_text}"
+    ))
+    
+    # Skills
+    skills = a.get("skills")
+    if isinstance(skills, list):
+        skills_text = ", ".join(skills) if skills else "-"
+    else:
+        skills_text = skills or "-"
+    
+    messages.append((
+        f"🎯 *Skills*\n\n{skills_text}"
+    ))
+    
+    # Achievements
+    achievements = a.get("achievements", "-")
+    messages.append((
+        f"🏆 *Achievements*\n\n{achievements}"
+    ))
+    
+    # Compensation & Salary
+    messages.append((
+        f"💰 *Compensation Details*\n\n"
+        f"Current Salary: {a.get('current_salary_currency', a.get('expected_salary_currency', '-'))} {a.get('current_salary','-')}\n"
+        f"Expected Salary: {a.get('expected_salary_currency','-')} {a.get('expected_salary','-')}\n"
+        f"Notice Period: {a.get('notice_period','-')} days\n"
+        f"Payment Status: {a.get('payment','-')}"
+    ))
+    
+    # Subscription Info
+    sub_exp = a.get('subscription_expiration', '-')
+    messages.append((
+        f"📅 *Subscription*\n\n"
+        f"Expires: {sub_exp}"
+    ))
+
+    # Send all text messages quickly
+    for msg in messages:
+        await update.message.reply_text(msg, parse_mode='Markdown')
+        await asyncio.sleep(0.1)  # Small delay to avoid rate limits
+    
+    from bot.keyboards.menus import get_home_button
     await update.message.reply_text(
         "✅ All details sent!",
         reply_markup=get_home_button()
     )
+
 
 
 def register_view_handlers(application):

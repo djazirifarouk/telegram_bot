@@ -5,7 +5,8 @@ from config.settings import TELEGRAM_TOKEN
 from bot.handlers import register_all_handlers
 from bot.handlers.text_handler import handle_text_input
 from bot.handlers.text_handler import handle_cancel_command
-
+import asyncio
+from bot.scheduler import schedule_daily_alerts
 
 # Configure logging
 logging.basicConfig(
@@ -13,6 +14,12 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+
+async def post_init(application: Application) -> None:
+    """Start scheduler after application initialization."""
+    asyncio.create_task(schedule_daily_alerts())
+    logger.info("📅 Daily subscription alerts scheduler started (9 AM)")
 
 
 def main():
@@ -24,24 +31,26 @@ def main():
     # Create application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Register all handlers (this includes file handlers which are registered FIRST)
+    # Register all handlers
     register_all_handlers(application)
-
-    # Add cancel command handler
+    
+    # Add cancel command
+    from bot.handlers.text_handler import handle_cancel_command
     application.add_handler(CommandHandler("cancel", handle_cancel_command))
     
-    # Register text handler LAST with lower priority (group=1)
+    # Register text handler LAST
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
         group=1
     )
     
-    # Start bot
+    # Set up post_init to start scheduler
+    application.post_init = post_init
+    
     logger.info("✅ Bot started successfully!")
     logger.info("📱 Send /start to begin")
-    logger.info("📱 Send /cancel to abort any operation")
     
-    # Run the bot
+    # Run the bot (this starts the event loop)
     application.run_polling(
         drop_pending_updates=True,
         allowed_updates=Update.ALL_TYPES

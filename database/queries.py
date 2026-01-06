@@ -333,3 +333,58 @@ async def delete_file_from_storage(file_url: str, bucket: str) -> bool:
     except Exception as e:
         logger.error(f"Error deleting file from storage: {e}", exc_info=True)
         return False
+
+
+async def log_purchase(
+    alias_email: str,
+    whatsapp: str,
+    plan: str,
+    amount: float = None,
+    currency: str = "USD",
+    payment_method: str = None,
+    transaction_id: str = None,
+    notes: str = None
+) -> bool:
+    """
+    Log a purchase to purchase_history table.
+    
+    Args:
+        alias_email: Applicant's alias email
+        whatsapp: Applicant's WhatsApp number
+        plan: Application plan (Casual, Normal, Intense)
+        amount: Payment amount
+        currency: Currency code
+        payment_method: Payment method used
+        transaction_id: Transaction ID from payment processor
+        notes: Additional notes
+        
+    Returns:
+        True if successful
+    """
+    try:
+        purchase_data = {
+            "alias_email": alias_email,
+            "whatsapp": whatsapp,
+            "plan": plan,
+            "amount": amount,
+            "currency": currency,
+            "payment_method": payment_method,
+            "transaction_id": transaction_id,
+            "notes": notes
+        }
+        
+        # Remove None values
+        purchase_data = {k: v for k, v in purchase_data.items() if v is not None}
+        
+        result = await asyncio.to_thread(
+            lambda: supabase.table("purchase_history")
+            .insert(purchase_data)
+            .execute()
+        )
+        
+        logger.info(f"Purchase logged for {alias_email}: {plan}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error logging purchase: {e}", exc_info=True)
+        return False

@@ -1,7 +1,8 @@
 import logging
 from telegram import Update
-from telegram.ext import ContextTypes, MessageHandler, filters
+from telegram.ext import ContextTypes, MessageHandler, filters, CallbackQueryHandler
 from bot.keyboards.menus import get_home_button, get_continue_or_home_keyboard
+from bot.handlers.edit import handle_recommendation_menu, handle_recommendation_remove
 from database.queries import (
     upload_file_to_storage,
     delete_file_from_storage,
@@ -150,6 +151,71 @@ async def handle_photo_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         state_manager.clear_state(user_id)
 
 
+async def handle_recommendation_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle recommendation letter uploads."""
+    user_id = update.message.from_user.id
+    state = state_manager.get_state(user_id)
+    
+    if not state or state.get("step") != "upload_file" or state.get("file_type") != "recommendation":
+        return
+    
+    document = update.message.document
+    
+    # Validate file type (PDF only)
+    if not document.file_name.lower().endswith('.pdf'):
+        await update.message.reply_text("❌ Please upload a PDF file.")
+        return
+    
+    processing_msg = await update.message.reply_text("⏳ Uploading recommendation letter...")
+    
+    try:
+        file = await context.bot.get_file(document.file_id)
+        file_bytes = await file.download_as_bytearray()
+        
+        lookup_field = state["lookup_field"]
+        lookup_value = state["lookup_value"]
+        
+        applicant = await get_applicant(lookup_field, lookup_value)
+        if not applicant:
+            await processing_msg.edit_text("❌ Applicant not found.")
+            state_manager.clear_state(user_id)
+            return
+        
+        # Upload to storage
+        from database.queries import upload_file_to_storage
+        new_letter_url = await upload_file_to_storage(bytes(file_bytes), document.file_name, "letters")
+        
+        if not new_letter_url:
+            await processing_msg.edit_text("❌ Error uploading letter.")
+            return
+        
+        # Add to existing letters
+        current_letters = applicant.get("recommendation_url", [])
+        if not isinstance(current_letters, list):
+            current_letters = []
+        current_letters.append(new_letter_url)
+        
+        success = await update_applicant(lookup_field, lookup_value, {"recommendation_url": current_letters})
+        
+        if success:
+            from bot.keyboards.menus import get_continue_or_home_keyboard
+            await processing_msg.edit_text(
+                f"✅ Recommendation letter uploaded!\n\nTotal: {len(current_letters)} letter(s)",
+                reply_markup=get_continue_or_home_keyboard()
+            )
+            # Refresh state
+            applicant = await get_applicant(lookup_field, lookup_value)
+            state_manager.update_state(user_id, {"applicant": applicant})
+        else:
+            await processing_msg.edit_text("❌ Error saving to database.")
+            state_manager.clear_state(user_id)
+        
+    except Exception as e:
+        logger.error(f"Error uploading recommendation: {e}", exc_info=True)
+        await processing_msg.edit_text("❌ Error uploading letter.")
+        state_manager.clear_state(user_id)
+
+
 def register_file_handlers(application):
     """Register file upload handlers."""
     # Document handler (for CV) - Register before text handler
@@ -163,5 +229,9 @@ def register_file_handlers(application):
         MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo_upload),
         group=0
     )
+
+    application.add_handler(CallbackQueryHandler(handle_recommendation_menu, pattern="^rec:"))
+    application.add_handler(CallbackQueryHandler(handle_recommendation_remove, pattern="^rec_rm:"))
+
     
     logger.info("✅ File upload handlers registered")

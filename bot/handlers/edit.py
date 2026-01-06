@@ -1092,6 +1092,124 @@ async def handle_continue_edit(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
+async def handle_recommendation_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle recommendation letters menu selection."""
+    query = update.callback_query
+    await query.answer()
+    
+    action = query.data.split("rec:")[1]
+    user_id = query.from_user.id
+    state = state_manager.get_state(user_id)
+    
+    if not state:
+        return
+    
+    applicant = state.get("applicant", {})
+    current_letters = applicant.get("recommendation_url", [])
+    if not isinstance(current_letters, list):
+        current_letters = []
+    
+    if action == "add":
+        state_manager.update_state(user_id, {"step": "upload_file", "file_type": "recommendation"})
+        await query.message.edit_text(
+            f"📝 *Add Recommendation Letter*\n\n"
+            f"Current: {len(current_letters)} letter(s)\n\n"
+            f"Please upload the recommendation letter (PDF).\n\n"
+            f"Send /cancel to abort.",
+            parse_mode="Markdown"
+        )
+    
+    elif action == "remove":
+        if not current_letters:
+            from bot.keyboards.menus import get_back_button
+            await query.message.edit_text(
+                "❌ No letters to remove.",
+                reply_markup=get_back_button("back_to_fields")
+            )
+            return
+        
+        # Show list of letters with remove buttons
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        keyboard = [
+            [InlineKeyboardButton(f"Letter {i+1}", callback_data=f"rec_rm:{i}")]
+            for i in range(len(current_letters))
+        ]
+        keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="back_to_fields")])
+        
+        await query.message.edit_text(
+            f"🗑️ *Remove Recommendation Letter*\n\n"
+            f"Total: {len(current_letters)} letter(s)\n\n"
+            f"Select letter to remove:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+    
+    elif action == "view":
+        if not current_letters:
+            letters_display = "None"
+        else:
+            letters_display = "\n".join([f"{i+1}. {url}" for i, url in enumerate(current_letters)])
+        
+        from bot.keyboards.menus import get_back_button
+        await query.message.edit_text(
+            f"📋 *Recommendation Letters ({len(current_letters)})*\n\n{letters_display}",
+            reply_markup=get_back_button("back_to_fields"),
+            parse_mode="Markdown"
+        )
+
+
+async def handle_recommendation_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle removing a recommendation letter."""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    letter_index = int(query.data.split("rec_rm:")[1])
+    
+    state = state_manager.get_state(user_id)
+    if not state:
+        return
+    
+    lookup_field = state["lookup_field"]
+    lookup_value = state["lookup_value"]
+    
+    # Get fresh data
+    applicant = await get_applicant(lookup_field, lookup_value)
+    current_letters = applicant.get("recommendation_url", [])
+    
+    if letter_index >= len(current_letters):
+        await query.message.edit_text("❌ Invalid selection.")
+        return
+    
+    # Remove the letter URL
+    removed_url = current_letters.pop(letter_index)
+    
+    # Also delete from storage
+    from database.queries import delete_file_from_storage
+    await delete_file_from_storage(removed_url, "letters")
+    
+    # Update database
+    success = await update_applicant(lookup_field, lookup_value, {"recommendation_url": current_letters})
+    
+    if success:
+        from bot.keyboards.menus import get_continue_or_home_keyboard
+        await query.message.edit_text(
+            f"✅ *Letter removed successfully!*\n\n"
+            f"Remaining: {len(current_letters)} letter(s)",
+            reply_markup=get_continue_or_home_keyboard(),
+            parse_mode="Markdown"
+        )
+        # Refresh state
+        applicant = await get_applicant(lookup_field, lookup_value)
+        state_manager.update_state(user_id, {"applicant": applicant})
+    else:
+        from bot.keyboards.menus import get_home_button
+        await query.message.edit_text(
+            "❌ Error removing letter",
+            reply_markup=get_home_button()
+        )
+
+
 # Register all new handlers
 def register_edit_handlers(application):
     """Register edit-related handlers - COMPLETE VERSION."""
