@@ -39,6 +39,10 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle all text input based on user state."""
     user_id = update.message.from_user.id
     text = update.message.text.strip()
+
+    # FOR GROUPS: Send immediate acknowledgment
+    if update.message.chat.type in ["group", "supergroup"]:
+        await update.message.reply_text("⏳ Processing...")
     
     state = state_manager.get_state(user_id)
     if not state:
@@ -93,6 +97,9 @@ async def handle_find_action(update: Update, text: str):
     """Handle finding an applicant."""
     user_id = update.message.from_user.id
     
+    # IMMEDIATE RESPONSE - Prevents timeout
+    processing_msg = await update.message.reply_text("🔍 Searching for applicant...")
+    
     try:
         field, value = resolve_lookup(text)
         
@@ -102,21 +109,28 @@ async def handle_find_action(update: Update, text: str):
             applicant = await get_applicant(field, value, "applications_archive")
         
         if not applicant:
-            await update.message.reply_text(
+            await processing_msg.edit_text(
                 f"❌ No applicant found with {field}: `{text}`",
-                reply_markup=get_home_button(),
                 parse_mode='Markdown'
+            )
+            await update.message.reply_text(
+                "Use /start to return to menu",
+                reply_markup=get_home_button()
             )
             state_manager.clear_state(user_id)
             return
+        
+        # Delete processing message
+        await processing_msg.delete()
         
         # Send applicant details
         await send_applicant_details(update, applicant)
         
     except Exception as e:
         logger.error(f"Error finding applicant: {e}")
+        await processing_msg.edit_text(f"❌ Error: {str(e)}")
         await update.message.reply_text(
-            f"❌ Error: {str(e)}",
+            "Use /start to return to menu",
             reply_markup=get_home_button()
         )
     
@@ -124,233 +138,250 @@ async def handle_find_action(update: Update, text: str):
 
 
 async def send_applicant_details(update: Update, a: dict):
-    """Send formatted applicant details - COMPLETE WITH ALL FIELDS."""
+    """Send formatted applicant details - FULLY OPTIMIZED."""
     from database.queries import download_file_from_storage
-    
-    # Prepare all messages first (no await)
-    messages = []
-    # Header
-    messages.append((
-        f"🚨 *APPLICANT DETAILS*\n\n"
-        f"👤 {a.get('first_name', '-')} {a.get('last_name', '-')}\n"
-        f"✒️ Plan: {a.get('application_plan', '-')}\n"
-        f"📧 Alias: `{a.get('alias_email', '-')}`\n"
-        f"📧 Personal email: `{a.get('email', '-')}`"
-    ))
-    
-    # Search Preferences & Application Info
-    country_pref = a.get("country_preference")
-    if isinstance(country_pref, list):
-        country_text = ", ".join(country_pref) if country_pref else "-"
-    else:
-        country_text = country_pref or "-"
-    
-    messages.append((
-        f"🔎 *Search Preferences*\n\n"
-        f"Applying for: `{a.get('apply_role', '-')}`\n"
-        f"Search AI Accuracy: `{a.get('search_accuracy', '-')}`\n"
-        f"Employment Type: `{a.get('employment_type', '-')}`\n"
-        f"Country Preference: `{country_text}`"
-    ))
-    
-    # CV
-    cv_file = await download_file_from_storage(a.get("cv_url"), "cv")
-    if cv_file:
-        await update.message.reply_document(document=cv_file, caption="📄 CV")
-    
-    # Profile Picture
-    picture_file = await download_file_from_storage(a.get("picture_url"), "pictures")
-    if picture_file:
-        await update.message.reply_document(document=picture_file, caption="📸 Profile Picture")
-    
-    # Recommendation Letters
-    logger.info(f"=== CHECKING RECOMMENDATION LETTERS ===")
-    logger.info(f"recommendation_url field value: {a.get('recommendation_url')}")
-    logger.info(f"Type: {type(a.get('recommendation_url'))}")
-    rec_letters_urls = a.get("recommendation_url", [])
-    logger.info(f"rec_letters_urls after .get(): {rec_letters_urls}")
-    
-    if rec_letters_urls and isinstance(rec_letters_urls, list) and len(rec_letters_urls) > 0:
-        logger.info(f"ENTERING recommendation letters block with {len(rec_letters_urls)} letters")
-        await update.message.reply_text(
-            f"📝 *Recommendation Letters*\n\nTotal: {len(rec_letters_urls)} letter(s)\n\nDownloading...",
+    import json
+    import asyncio
+
+
+    try:
+        # Send immediate first message
+        first_msg = await update.message.reply_text(
+            f"🚨 *APPLICANT DETAILS*\n\n"
+            f"👤 {a.get('first_name', '-')} {a.get('last_name', '-')}\n"
+            f"✒️ Plan: {a.get('application_plan', '-')}\n"
+            f"📧 Alias: `{a.get('alias_email', '-')}`\n"
+            f"📧 Personal: `{a.get('email', '-')}`\n\n"
+            f"⏳ Loading...",
             parse_mode='Markdown'
         )
         
-        for i, letter_url in enumerate(rec_letters_urls, 1):
+        # Prepare all text data
+        country_pref = a.get("country_preference", [])
+        if isinstance(country_pref, str):
             try:
-                logger.info(f"Downloading recommendation letter {i}: {letter_url}")
+                country_pref = json.loads(country_pref)
+            except:
+                pass
+        country_text = ", ".join(country_pref) if isinstance(country_pref, list) and country_pref else "-"
+        
+        auth_countries = a.get("authorized_countries", [])
+        if isinstance(auth_countries, str):
+            try:
+                auth_countries = json.loads(auth_countries)
+            except:
+                pass
+        auth_text = ", ".join(auth_countries) if isinstance(auth_countries, list) and auth_countries else "-"
+        
+        skills = a.get("skills", [])
+        if isinstance(skills, str):
+            try:
+                skills = json.loads(skills)
+            except:
+                pass
+        
+        if isinstance(skills, list):
+            skills_text = ", ".join(skills[:15]) if skills else "-"
+            if len(skills) > 15:
+                skills_text += f"... (+{len(skills)-15} more)"
+        else:
+            skills_text = str(skills) if skills else "-"
+        
+        # Roles/Work Experience
+        roles = a.get("roles")
+        if not roles:
+            roles_text = "-"
+        else:
+            lines = []
+            for r in roles:
+                lines.append(
+                    f"• *{r.get('title','-')}* at {r.get('company','-')}\n"
+                    f"  📍 {r.get('location','-')}\n"
+                    f"  🗓️ {r.get('start','-')} → "
+                    f"{'Present' if r.get('current') else r.get('end','-')}\n"
+                    f"  📝 {r.get('description','-')}"
+                )
+            roles_text = "\n\n".join(lines)
+
+        # Education
+        education = a.get("education")
+        if not education:
+            education_text = "-"
+        else:
+            lines = []
+            for e in education:
+                lines.append(
+                    f"• *{e.get('degree','-')}* — {e.get('field','-')}\n"
+                    f"  🏫 {e.get('school','-')}\n"
+                    f"  🗓️ {e.get('start','-')} → {e.get('end','-')}"
+                )
+            education_text = "\n\n".join(lines)
+
+        # Certificates
+        certificates = a.get("certificates")
+        if not certificates:
+            certificates_text = "-"
+        else:
+            lines = []
+            for c in certificates:
+                lines.append(
+                    f"• *{c.get('name','-')}*\n"
+                    f"  🆔 {c.get('number','-')}\n"
+                    f"  🗓️ {c.get('start','-')} → {c.get('end','-')}"
+                )
+            certificates_text = "\n\n".join(lines)
+        
+        # Languages
+        languages = a.get("languages")
+        if not languages:
+            languages_text = "-"
+        else:
+            lines = []
+            for l in languages:
+                lines.append(
+                    f"• *{l.get('language','-')}* — {l.get('proficiency','-')}"
+                )
+            languages_text = "\n".join(lines)
+            
+        # Combine into fewer, larger messages
+        messages = [
+            # Message 1: Search + Contact
+            f"🔎 *Search Preferences*\n"
+            f"Role: {a.get('apply_role', '-')}\n"
+            f"Accuracy: {a.get('search_accuracy', '-')}\n"
+            f"Type: {a.get('employment_type', '-')}\n"
+            f"Countries: {country_text}\n\n"
+            f"📞 *Contact*\n"
+            f"📱 {a.get('whatsapp','-')}\n"
+            f"🔗 {a.get('linkedin','-')}\n"
+            f"🖼️ {a.get('website','-')}\n"
+            f"💻 {a.get('github','-')}",
+
+            # Message 2: Address info
+            f"📍 *Address*\n"
+            f"Street: {a.get('street', '-')}\n"
+            f"Building No: {a.get('building', '-')}\n"
+            f"Apartment No: {a.get('apartment', '-')}\n"
+            f"Country: {a.get('residency_country', '-')}\n"
+            f"City: {a.get('city', '-')}\n"
+            f"ZIP: {a.get('zip', '-')}",
+            
+            # Message 3: Work + Compensation
+            f"💼 *Work Info*\n"
+            f"Auth: {auth_text}\n\n"
+            f"Visa: {a.get('visa', '-')}\n"
+            f"Relocate: {a.get('relocate', '-')}\n"
+            f"Experience: {a.get('experience', '-')} yrs\n\n"
+            f"🎯 *Work Experience*\n\n{roles_text}",
+
+            # Message 4: Education + Certificates
+            f"🎓 *Education*\n\n{education_text}\n\n"
+            f"📝 *Certificates*\n\n{certificates_text}",
+
+            # Message 5: Languages + Skills
+            f"🗣️ *Languages*\n\n{languages_text}\n\n"
+            f"🎯 *Skills*\n{skills_text}\n\n"
+
+            # Message 6: General info
+            f"💰 *Compensation*\n"
+            f"Current: {a.get('current_salary','-')} {a.get('expected_salary_currency','-')}\n"
+            f"Expected: {a.get('expected_salary','-')} {a.get('expected_salary_currency','-')}\n"
+            f"Notice Period: {a.get('notice_period','-')}\n"
+            f"Expected date to start: {a.get('expected_start_date','-')}\n"
+            f"Race/ethnicity: {a.get('race_ethnicity','-')}\n"
+            f"Disability: {a.get('disability_status','-')}\n"
+            f"Veteran status: {a.get('veteran_status','-')}",
+            
+            # Message 7: Subscription
+            
+            f"📅 *Subscription*\n"
+            f"Expires: {a.get('subscription_expiration', '-')}"
+        ]
+        
+        # Send messages with delay (avoid rate limit)
+        for msg in messages:
+            await update.message.reply_text(msg, parse_mode='Markdown')
+            await asyncio.sleep(0.3)  # Longer delay between messages
+        
+        # Start file downloads in background
+        async def send_files_background():
+            try:
+                await asyncio.sleep(0.5)  # Small delay before starting downloads
                 
-                # Download the file from storage
-                letter_file = await download_file_from_storage(letter_url, "letters")
-                
-                if letter_file:
-                    await update.message.reply_document(
-                        document=letter_file,
-                        caption=f"📝 Recommendation Letter {i}/{len(rec_letters_urls)}"
-                    )
-                    logger.info(f"Successfully sent recommendation letter {i}")
+                # Parse recommendation letters
+                rec_letters_raw = a.get("recommendation_url", [])
+                if isinstance(rec_letters_raw, str):
+                    try:
+                        rec_letters_urls = json.loads(rec_letters_raw) if rec_letters_raw else []
+                    except:
+                        rec_letters_urls = []
                 else:
-                    logger.warning(f"Could not download letter {i}: {letter_url}")
-                    await update.message.reply_text(f"⚠️ Letter {i} could not be downloaded")
+                    rec_letters_urls = rec_letters_raw if isinstance(rec_letters_raw, list) else []
+                
+                # Download files with timeout protection
+                async def safe_download(url, bucket):
+                    try:
+                        return await asyncio.wait_for(
+                            download_file_from_storage(url, bucket),
+                            timeout=30.0  # 30 second timeout per file
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(f"Timeout downloading {bucket} file: {url}")
+                        return None
+                    except Exception as e:
+                        logger.error(f"Error downloading {bucket} file: {e}")
+                        return None
+                
+                # Download CV and picture
+                cv_file = await safe_download(a.get("cv_url"), "cv")
+                if cv_file:
+                    await update.message.reply_document(document=cv_file, caption="📄 CV")
+                    await asyncio.sleep(0.5)
+                
+                picture_file = await safe_download(a.get("picture_url"), "pictures")
+                if picture_file:
+                    await update.message.reply_document(document=picture_file, caption="📸 Profile Picture")
+                    await asyncio.sleep(0.5)
+                
+                # Download recommendation letters (one at a time to avoid overwhelming)
+                if len(rec_letters_urls) > 0:
+                    await update.message.reply_text(
+                        f"📝 *Recommendation Letters* ({len(rec_letters_urls)})",
+                        parse_mode='Markdown'
+                    )
                     
+                    for i, letter_url in enumerate(rec_letters_urls, 1):
+                        letter_file = await safe_download(letter_url, "letters")
+                        if letter_file:
+                            await update.message.reply_document(
+                                document=letter_file,
+                                caption=f"📝 Letter {i}/{len(rec_letters_urls)}"
+                            )
+                            await asyncio.sleep(0.5)
+                
             except Exception as e:
-                logger.error(f"Error with recommendation letter {i}: {e}", exc_info=True)
-                await update.message.reply_text(f"❌ Error with letter {i}")
-
-    # Contact Information
-    messages.append((
-        f"📞 *Contact Information*\n\n"
-        f"Name: {a.get('first_name','-')} {a.get('last_name','-')}\n"
-        f"Email: {a.get('email','-')}\n"
-        f"WhatsApp: {a.get('whatsapp','-')}\n"
-        f"LinkedIn: {a.get('linkedin','-')}\n"
-        f"X/Twitter: {a.get('twitter','-')}\n"
-        f"GitHub: {a.get('github','-')}\n"
-        f"Portfolio: {a.get('website','-')}"
-    ))
-    
-    # Address Information
-    messages.append((
-        f"🏠 *Address Information*\n\n"
-        f"Street: {a.get('street','-')}\n"
-        f"Building No: {a.get('building','-')}\n"
-        f"Apartment No: {a.get('apartment','-')}\n"
-        f"City: {a.get('city','-')}\n"
-        f"Country: {a.get('country','-')}\n"
-        f"Zip Code: {a.get('zip','-')}"
-    ))
-    
-    # Legalisation & Work Authorization
-    auth_countries = a.get("authorized_countries", [])
-    if isinstance(auth_countries, list):
-        auth_text = ", ".join(auth_countries) if auth_countries else "-"
-    else:
-        auth_text = auth_countries or "-"
-    
-    messages.append((
-        f"📝 *Legalisation & Authorization*\n\n"
-        f"Authorized Countries: {auth_text}\n"
-        f"Visa: {a.get('visa','-')}\n"
-        f"Willing to Relocate: {a.get('relocate','-')}\n"
-        f"Total Years of Experience: {a.get('experience','-')} years"
-    ))
-    
-    # Roles/Work Experience
-    roles = a.get("roles")
-    if not roles:
-        roles_text = "-"
-    else:
-        lines = []
-        for r in roles:
-            lines.append(
-                f"• *{r.get('title','-')}* at {r.get('company','-')}\n"
-                f"  📍 {r.get('location','-')}\n"
-                f"  🗓️ {r.get('start','-')} → "
-                f"{'Present' if r.get('current') else r.get('end','-')}\n"
-                f"  📝 {r.get('description','-')}"
+                logger.error(f"Error in background file download: {e}", exc_info=True)
+        
+        # Start background task
+        asyncio.create_task(send_files_background())
+        
+        # Final message
+        from bot.keyboards.menus import get_home_button
+        await update.message.reply_text(
+            "✅ Details sent! Files uploading in background...",
+            reply_markup=get_home_button()
+        )
+        
+    except Exception as e:
+        logger.error(f"Error: {e}", exc_info=True)
+        from bot.keyboards.menus import get_home_button
+        try:
+            await update.message.reply_text(
+                f"❌ Error sending details. Please try again.",
+                reply_markup=get_home_button()
             )
-        roles_text = "\n\n".join(lines)
-    
-    messages.append((
-        f"🎯 *Work Experience*\n\n{roles_text}"
-    ))
-    
-    # Education
-    education = a.get("education")
-    if not education:
-        education_text = "-"
-    else:
-        lines = []
-        for e in education:
-            lines.append(
-                f"• *{e.get('degree','-')}* — {e.get('field','-')}\n"
-                f"  🏫 {e.get('school','-')}\n"
-                f"  🗓️ {e.get('start','-')} → {e.get('end','-')}"
-            )
-        education_text = "\n\n".join(lines)
-    
-    messages.append((
-        f"🎓 *Education*\n\n{education_text}"
-    ))
-    
-    # Certificates
-    certificates = a.get("certificates")
-    if not certificates:
-        certificates_text = "-"
-    else:
-        lines = []
-        for c in certificates:
-            lines.append(
-                f"• *{c.get('name','-')}*\n"
-                f"  🆔 {c.get('number','-')}\n"
-                f"  🗓️ {c.get('start','-')} → {c.get('end','-')}"
-            )
-        certificates_text = "\n\n".join(lines)
-    
-    messages.append((
-        f"📜 *Courses & Certificates*\n\n{certificates_text}"
-    ))
-    
-    # Languages
-    languages = a.get("languages")
-    if not languages:
-        languages_text = "-"
-    else:
-        lines = []
-        for l in languages:
-            lines.append(
-                f"• *{l.get('language','-')}* — {l.get('proficiency','-')}"
-            )
-        languages_text = "\n".join(lines)
-    
-    messages.append((
-        f"🌍 *Languages*\n\n{languages_text}"
-    ))
-    
-    # Skills
-    skills = a.get("skills")
-    if isinstance(skills, list):
-        skills_text = ", ".join(skills) if skills else "-"
-    else:
-        skills_text = skills or "-"
-    
-    messages.append((
-        f"🎯 *Skills*\n\n{skills_text}"
-    ))
-    
-    # Achievements
-    achievements = a.get("achievements", "-")
-    messages.append((
-        f"🏆 *Achievements*\n\n{achievements}"
-    ))
-    
-    # Compensation & Salary
-    messages.append((
-        f"💰 *Compensation Details*\n\n"
-        f"Current Salary: {a.get('current_salary_currency', a.get('expected_salary_currency', '-'))} {a.get('current_salary','-')}\n"
-        f"Expected Salary: {a.get('expected_salary_currency','-')} {a.get('expected_salary','-')}\n"
-        f"Notice Period: {a.get('notice_period','-')} days\n"
-        f"Payment Status: {a.get('payment','-')}"
-    ))
-    
-    # Subscription Info
-    sub_exp = a.get('subscription_expiration', '-')
-    messages.append((
-        f"📅 *Subscription*\n\n"
-        f"Expires: {sub_exp}"
-    ))
-
-    # Send all text messages quickly
-    for msg in messages:
-        await update.message.reply_text(msg, parse_mode='Markdown')
-        await asyncio.sleep(0.1)  # Small delay to avoid rate limits
-    
-    from bot.keyboards.menus import get_home_button
-    await update.message.reply_text(
-        "✅ All details sent!",
-        reply_markup=get_home_button()
-    )
+        except:
+            pass  # If even error message fails, just log it
 
 
 # =============================================================================
@@ -361,6 +392,9 @@ async def handle_mark_done_action(update: Update, text: str):
     """Handle marking payment as done and log to purchase history."""
     user_id = update.message.from_user.id
     
+    # IMMEDIATE RESPONSE
+    processing_msg = await update.message.reply_text("⏳ Processing payment...")
+    
     try:
         from utils.helpers import resolve_lookup
         from database.queries import get_applicant, update_applicant, log_purchase
@@ -370,8 +404,9 @@ async def handle_mark_done_action(update: Update, text: str):
         # Get applicant info first
         applicant = await get_applicant(field, value)
         if not applicant:
+            await processing_msg.edit_text("❌ Applicant not found.")
             await update.message.reply_text(
-                "❌ Applicant not found.",
+                "Use /start to return to menu",
                 reply_markup=get_home_button()
             )
             state_manager.clear_state(user_id)
@@ -389,7 +424,7 @@ async def handle_mark_done_action(update: Update, text: str):
                 alias_email=applicant.get('alias_email', ''),
                 whatsapp=applicant.get('whatsapp', ''),
                 plan=applicant.get('application_plan', 'Unknown'),
-                amount=None,  # You can add amount if you have it
+                amount=None,
                 currency='TND',
                 notes=f"Payment marked as done by admin"
             )
@@ -399,21 +434,26 @@ async def handle_mark_done_action(update: Update, text: str):
             else:
                 logger.error(f"❌ Failed to log purchase")
             
-            await update.message.reply_text(
+            await processing_msg.edit_text(
                 f"✅ Payment marked as *done* for:\n`{text}`\n\n"
                 f"📝 Purchase logged to history",
-                reply_markup=get_home_button(),
                 parse_mode='Markdown'
             )
-        else:
             await update.message.reply_text(
-                "❌ Error marking payment",
+                "Use /start to return to menu",
+                reply_markup=get_home_button()
+            )
+        else:
+            await processing_msg.edit_text("❌ Error marking payment")
+            await update.message.reply_text(
+                "Use /start to return to menu",
                 reply_markup=get_home_button()
             )
     except Exception as e:
         logger.error(f"Error in mark_done: {e}", exc_info=True)
+        await processing_msg.edit_text(f"❌ Error: {str(e)}")
         await update.message.reply_text(
-            f"❌ Error: {str(e)}",
+            "Use /start to return to menu",
             reply_markup=get_home_button()
         )
     
