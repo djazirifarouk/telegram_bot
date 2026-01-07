@@ -136,6 +136,16 @@ async def handle_edit_column_selection(update: Update, context: ContextTypes.DEF
     # Recommendation Letters (Array of URLs)
     elif col == "recommendation_url":
         state_manager.update_state(user_id, {"step": "submenu"})
+        
+        # Parse if stored as string
+        current_value_raw = current_value
+        if isinstance(current_value_raw, str):
+            try:
+                import json
+                current_value = json.loads(current_value_raw) if current_value_raw else []
+            except:
+                current_value = []
+        
         letters_count = len(current_value) if current_value else 0
         await query.message.edit_text(
             f"📝 *Recommendation Letters*\n\nCurrent: {letters_count} letter(s)\n\n"
@@ -1105,9 +1115,19 @@ async def handle_recommendation_menu(update: Update, context: ContextTypes.DEFAU
         return
     
     applicant = state.get("applicant", {})
-    current_letters = applicant.get("recommendation_url", [])
-    if not isinstance(current_letters, list):
-        current_letters = []
+    
+    # Parse recommendation_url if it's a string
+    import json
+    current_letters_raw = applicant.get("recommendation_url", [])
+    
+    if isinstance(current_letters_raw, str):
+        try:
+            current_letters = json.loads(current_letters_raw) if current_letters_raw else []
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse recommendation_url: {current_letters_raw}")
+            current_letters = []
+    else:
+        current_letters = current_letters_raw if isinstance(current_letters_raw, list) else []
     
     if action == "add":
         state_manager.update_state(user_id, {"step": "upload_file", "file_type": "recommendation"})
@@ -1128,7 +1148,6 @@ async def handle_recommendation_menu(update: Update, context: ContextTypes.DEFAU
             )
             return
         
-        # Show list of letters with remove buttons
         from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         keyboard = [
             [InlineKeyboardButton(f"Letter {i+1}", callback_data=f"rec_rm:{i}")]
@@ -1148,15 +1167,21 @@ async def handle_recommendation_menu(update: Update, context: ContextTypes.DEFAU
         if not current_letters:
             letters_display = "None"
         else:
-            letters_display = "\n".join([f"{i+1}. {url}" for i, url in enumerate(current_letters)])
+            # DON'T use Markdown when displaying URLs - use plain text
+            letters_list = []
+            for i, url in enumerate(current_letters, 1):
+                # Extract just the filename from the URL
+                filename = url.split('/')[-1]
+                letters_list.append(f"{i}. {filename}")
+            letters_display = "\n".join(letters_list)
         
         from bot.keyboards.menus import get_back_button
+        # Use parse_mode=None to avoid Markdown parsing errors
         await query.message.edit_text(
-            f"📋 *Recommendation Letters ({len(current_letters)})*\n\n{letters_display}",
+            f"📋 Recommendation Letters ({len(current_letters)})\n\n{letters_display}",
             reply_markup=get_back_button("back_to_fields"),
-            parse_mode="Markdown"
+            parse_mode=None  # Changed from 'Markdown' to None
         )
-
 
 async def handle_recommendation_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle removing a recommendation letter."""
@@ -1173,7 +1198,6 @@ async def handle_recommendation_remove(update: Update, context: ContextTypes.DEF
     lookup_field = state["lookup_field"]
     lookup_value = state["lookup_value"]
     
-    # Get fresh data
     applicant = await get_applicant(lookup_field, lookup_value)
     current_letters = applicant.get("recommendation_url", [])
     
@@ -1181,14 +1205,11 @@ async def handle_recommendation_remove(update: Update, context: ContextTypes.DEF
         await query.message.edit_text("❌ Invalid selection.")
         return
     
-    # Remove the letter URL
     removed_url = current_letters.pop(letter_index)
     
-    # Also delete from storage
     from database.queries import delete_file_from_storage
     await delete_file_from_storage(removed_url, "letters")
     
-    # Update database
     success = await update_applicant(lookup_field, lookup_value, {"recommendation_url": current_letters})
     
     if success:
@@ -1199,7 +1220,6 @@ async def handle_recommendation_remove(update: Update, context: ContextTypes.DEF
             reply_markup=get_continue_or_home_keyboard(),
             parse_mode="Markdown"
         )
-        # Refresh state
         applicant = await get_applicant(lookup_field, lookup_value)
         state_manager.update_state(user_id, {"applicant": applicant})
     else:
@@ -1234,6 +1254,8 @@ def register_edit_handlers(application):
     # Navigation
     application.add_handler(CallbackQueryHandler(handle_back_to_fields, pattern="^back_to_fields$"))
     application.add_handler(CallbackQueryHandler(handle_continue_edit, pattern="^continue_edit$"))
+    application.add_handler(CallbackQueryHandler(handle_recommendation_menu, pattern="^rec:"))
+    application.add_handler(CallbackQueryHandler(handle_recommendation_remove, pattern="^rec_rm:"))
     
     # Country selection (must be AFTER countries_action to avoid conflicts)
     application.add_handler(CallbackQueryHandler(handle_country_selection, pattern="^country"))

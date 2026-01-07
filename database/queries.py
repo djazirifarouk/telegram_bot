@@ -22,13 +22,18 @@ async def get_applicant(field: str, value: str, table: str = "applications") -> 
     Returns:
         Applicant data or None
     """
-    result = await asyncio.to_thread(
-        lambda: supabase.table(table)
-        .select("*")
-        .eq(field, value)
-        .execute()
-    )
-    return result.data[0] if result.data else None
+    try:
+        result = await asyncio.to_thread(
+            lambda: supabase.table(table)
+            .select("*")  # This should get everything including recommendation_url and recommendation_letters
+            .eq(field, value)
+            .single()
+            .execute()
+        )
+        return result.data
+    except Exception as e:
+        logger.error(f"Error getting applicant: {e}")
+        return None
 
 
 async def get_applicants_by_status(status: str) -> List[Dict]:
@@ -236,19 +241,36 @@ async def download_file_from_storage(file_url: str, bucket: str) -> Optional[io.
         BytesIO object or None
     """
     if not file_url:
+        logger.warning("download_file_from_storage called with empty file_url")
         return None
     
     try:
-        path = urllib.parse.urlparse(file_url).path.split('/')[-1]
+        logger.info(f"Attempting to download file from bucket '{bucket}'")
+        logger.info(f"Full URL: {file_url}")
+        
+        # Remove query parameters (the ? and everything after it)
+        clean_url = file_url.split('?')[0]
+        
+        # Extract filename from URL
+        path = urllib.parse.urlparse(clean_url).path.split('/')[-1]
+        logger.info(f"Extracted path: {path}")
+        
+        # Download from storage
+        logger.info(f"Calling supabase.storage.from_('{bucket}').download('{path}')")
         file_bytes = await asyncio.to_thread(
             lambda: supabase.storage.from_(bucket).download(path)
         )
+        
+        logger.info(f"Successfully downloaded {len(file_bytes)} bytes from {bucket}/{path}")
+        
         file_obj = io.BytesIO(file_bytes)
         file_obj.name = path
         return file_obj
+        
     except Exception as e:
-        logger.error(f"Error downloading file: {e}")
+        logger.error(f"Error downloading file from {bucket}/{path if 'path' in locals() else 'unknown'}: {e}", exc_info=True)
         return None
+    
 
 async def upload_file_to_storage(file_bytes: bytes, filename: str, bucket: str) -> Optional[str]:
     """
@@ -340,7 +362,7 @@ async def log_purchase(
     whatsapp: str,
     plan: str,
     amount: float = None,
-    currency: str = "USD",
+    currency: str = "TND",
     payment_method: str = None,
     transaction_id: str = None,
     notes: str = None

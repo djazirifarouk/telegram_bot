@@ -23,13 +23,27 @@ def escape_markdown(text: str) -> str:
 
 
 async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle document uploads (CV)."""
+    """Handle document uploads (CV or recommendation letters)."""
     user_id = update.message.from_user.id
     state = state_manager.get_state(user_id)
     
-    if not state or state.get("step") != "upload_file" or state.get("file_type") != "cv":
+    if not state or state.get("step") != "upload_file":
         return
     
+    file_type = state.get("file_type")
+    
+    # Route to appropriate handler
+    if file_type == "cv":
+        await handle_cv_upload(update, context, state)
+    elif file_type == "recommendation":
+        await handle_recommendation_upload_internal(update, context, state)
+    else:
+        logger.warning(f"Unknown file_type: {file_type}")
+
+
+async def handle_cv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE, state: dict):
+    """Handle CV upload."""
+    user_id = update.message.from_user.id
     document = update.message.document
     
     # Validate file type
@@ -74,7 +88,6 @@ async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_T
                 "✅ CV updated successfully!",
                 reply_markup=get_continue_or_home_keyboard()
             )
-            # DON'T clear state
         else:
             await processing_msg.edit_text(
                 "❌ Error updating database. Please try again.",
@@ -88,6 +101,77 @@ async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_T
             f"❌ Error uploading CV. Please try again.",
             reply_markup=get_home_button()
         )
+        state_manager.clear_state(user_id)
+
+
+async def handle_recommendation_upload_internal(update: Update, context: ContextTypes.DEFAULT_TYPE, state: dict):
+    """Handle recommendation letter upload."""
+    user_id = update.message.from_user.id
+    document = update.message.document
+    
+    # Validate file type (PDF only)
+    if not document.file_name.lower().endswith('.pdf'):
+        await update.message.reply_text("❌ Please upload a PDF file.")
+        return
+    
+    processing_msg = await update.message.reply_text("⏳ Uploading recommendation letter...")
+    
+    try:
+        file = await context.bot.get_file(document.file_id)
+        file_bytes = await file.download_as_bytearray()
+        
+        lookup_field = state["lookup_field"]
+        lookup_value = state["lookup_value"]
+        
+        applicant = await get_applicant(lookup_field, lookup_value)
+        if not applicant:
+            await processing_msg.edit_text("❌ Applicant not found.")
+            state_manager.clear_state(user_id)
+            return
+        
+        # Upload to storage
+        new_letter_url = await upload_file_to_storage(bytes(file_bytes), document.file_name, "letters")
+        
+        if not new_letter_url:
+            await processing_msg.edit_text("❌ Error uploading letter.")
+            return
+        
+        # Get existing letters and parse if needed
+        import json
+        current_letters_raw = applicant.get("recommendation_url", [])
+        
+        # Parse if it's a JSON string
+        if isinstance(current_letters_raw, str):
+            try:
+                current_letters = json.loads(current_letters_raw) if current_letters_raw else []
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse recommendation_url: {current_letters_raw}")
+                current_letters = []
+        else:
+            current_letters = current_letters_raw if isinstance(current_letters_raw, list) else []
+        
+        # Add new letter
+        current_letters.append(new_letter_url)
+        logger.info(f"Adding letter. New list: {current_letters}")
+        
+        # Update database
+        success = await update_applicant(lookup_field, lookup_value, {"recommendation_url": current_letters})
+        
+        if success:
+            await processing_msg.edit_text(
+                f"✅ Recommendation letter uploaded!\n\nTotal: {len(current_letters)} letter(s)",
+                reply_markup=get_continue_or_home_keyboard()
+            )
+            # Refresh state
+            applicant = await get_applicant(lookup_field, lookup_value)
+            state_manager.update_state(user_id, {"applicant": applicant})
+        else:
+            await processing_msg.edit_text("❌ Error saving to database.")
+            state_manager.clear_state(user_id)
+        
+    except Exception as e:
+        logger.error(f"Error uploading recommendation: {e}", exc_info=True)
+        await processing_msg.edit_text("❌ Error uploading letter.")
         state_manager.clear_state(user_id)
 
 
@@ -151,74 +235,9 @@ async def handle_photo_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         state_manager.clear_state(user_id)
 
 
-async def handle_recommendation_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle recommendation letter uploads."""
-    user_id = update.message.from_user.id
-    state = state_manager.get_state(user_id)
-    
-    if not state or state.get("step") != "upload_file" or state.get("file_type") != "recommendation":
-        return
-    
-    document = update.message.document
-    
-    # Validate file type (PDF only)
-    if not document.file_name.lower().endswith('.pdf'):
-        await update.message.reply_text("❌ Please upload a PDF file.")
-        return
-    
-    processing_msg = await update.message.reply_text("⏳ Uploading recommendation letter...")
-    
-    try:
-        file = await context.bot.get_file(document.file_id)
-        file_bytes = await file.download_as_bytearray()
-        
-        lookup_field = state["lookup_field"]
-        lookup_value = state["lookup_value"]
-        
-        applicant = await get_applicant(lookup_field, lookup_value)
-        if not applicant:
-            await processing_msg.edit_text("❌ Applicant not found.")
-            state_manager.clear_state(user_id)
-            return
-        
-        # Upload to storage
-        from database.queries import upload_file_to_storage
-        new_letter_url = await upload_file_to_storage(bytes(file_bytes), document.file_name, "letters")
-        
-        if not new_letter_url:
-            await processing_msg.edit_text("❌ Error uploading letter.")
-            return
-        
-        # Add to existing letters
-        current_letters = applicant.get("recommendation_url", [])
-        if not isinstance(current_letters, list):
-            current_letters = []
-        current_letters.append(new_letter_url)
-        
-        success = await update_applicant(lookup_field, lookup_value, {"recommendation_url": current_letters})
-        
-        if success:
-            from bot.keyboards.menus import get_continue_or_home_keyboard
-            await processing_msg.edit_text(
-                f"✅ Recommendation letter uploaded!\n\nTotal: {len(current_letters)} letter(s)",
-                reply_markup=get_continue_or_home_keyboard()
-            )
-            # Refresh state
-            applicant = await get_applicant(lookup_field, lookup_value)
-            state_manager.update_state(user_id, {"applicant": applicant})
-        else:
-            await processing_msg.edit_text("❌ Error saving to database.")
-            state_manager.clear_state(user_id)
-        
-    except Exception as e:
-        logger.error(f"Error uploading recommendation: {e}", exc_info=True)
-        await processing_msg.edit_text("❌ Error uploading letter.")
-        state_manager.clear_state(user_id)
-
-
 def register_file_handlers(application):
     """Register file upload handlers."""
-    # Document handler (for CV) - Register before text handler
+    # Document handler (for CV and recommendations) - Register before text handler
     application.add_handler(
         MessageHandler(filters.Document.ALL & ~filters.COMMAND, handle_document_upload),
         group=0
@@ -229,9 +248,5 @@ def register_file_handlers(application):
         MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo_upload),
         group=0
     )
-
-    application.add_handler(CallbackQueryHandler(handle_recommendation_menu, pattern="^rec:"))
-    application.add_handler(CallbackQueryHandler(handle_recommendation_remove, pattern="^rec_rm:"))
-
     
     logger.info("✅ File upload handlers registered")

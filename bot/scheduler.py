@@ -82,17 +82,17 @@ async def send_subscription_alerts():
 
 
 async def schedule_daily_alerts():
-    """Schedule daily alerts at 9 AM."""
+    """Schedule daily alerts at 8 AM."""
     from datetime import datetime
     import time
     
     while True:
         try:
             now = datetime.now()
-            # Calculate next 9 AM
-            target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+            # Calculate next 8 AM
+            target = now.replace(hour=7, minute=0, second=0, microsecond=0)
             if now >= target:
-                # If it's already past 9 AM, schedule for tomorrow
+                # If it's already past 8 AM, schedule for tomorrow
                 target = target + timedelta(days=1)
             
             # Calculate seconds until target time
@@ -104,7 +104,7 @@ async def schedule_daily_alerts():
             # Send the alert
             await send_subscription_alerts()
             
-            # Wait 60 seconds to avoid running twice at 9 AM
+            # Wait 60 seconds to avoid running twice at 8 AM
             await asyncio.sleep(60)
             
         except Exception as e:

@@ -168,7 +168,8 @@ async def find_applicant_details(update: Update, text: str):
 async def send_applicant_details(update: Update, a: dict):
     """Send formatted applicant details - COMPLETE WITH ALL FIELDS."""
     from database.queries import download_file_from_storage
-    
+    import json
+
     # Prepare all messages first (no await)
     messages = []
     # Header
@@ -206,13 +207,49 @@ async def send_applicant_details(update: Update, a: dict):
         await update.message.reply_document(document=picture_file, caption="📸 Profile Picture")
     
     # Recommendation Letters
-    rec_letters = a.get("recommendation_url", [])
-    if rec_letters and isinstance(rec_letters, list):
-        messages.append((
-            f"📝 *Recommendation Letters*\n\n"
-            f"Total: {len(rec_letters)} letter(s)\n\n"
-            f"URLs:\n" + "\n".join([f"• {url}" for url in rec_letters])
-        ))
+    rec_letters_raw = a.get("recommendation_url", [])
+    
+    # Parse if it's a JSON string
+    if isinstance(rec_letters_raw, str):
+        try:
+            rec_letters_urls = json.loads(rec_letters_raw) if rec_letters_raw else []
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse recommendation_url: {rec_letters_raw}")
+            rec_letters_urls = []
+    else:
+        rec_letters_urls = rec_letters_raw if rec_letters_raw else []
+    
+    logger.info(f"Parsed recommendation letters: {rec_letters_urls} (type: {type(rec_letters_urls)})")
+    
+    # Now check if we have letters
+    if rec_letters_urls and isinstance(rec_letters_urls, list) and len(rec_letters_urls) > 0:
+        logger.info(f"✅ Found {len(rec_letters_urls)} recommendation letters to download")
+        
+        await update.message.reply_text(
+            f"📝 *Recommendation Letters*\n\nTotal: {len(rec_letters_urls)} letter(s)\n\nDownloading...",
+            parse_mode='Markdown'
+        )
+        
+        for i, letter_url in enumerate(rec_letters_urls, 1):
+            try:
+                logger.info(f"Downloading recommendation letter {i}: {letter_url}")
+                
+                # Download the file from storage
+                letter_file = await download_file_from_storage(letter_url, "letters")
+                
+                if letter_file:
+                    await update.message.reply_document(
+                        document=letter_file,
+                        caption=f"📝 Recommendation Letter {i}/{len(rec_letters_urls)}"
+                    )
+                    logger.info(f"✅ Successfully sent recommendation letter {i}")
+                else:
+                    logger.warning(f"⚠️ Could not download letter {i}: {letter_url}")
+                    await update.message.reply_text(f"⚠️ Letter {i} could not be downloaded")
+                    
+            except Exception as e:
+                logger.error(f"❌ Error with recommendation letter {i}: {e}", exc_info=True)
+                await update.message.reply_text(f"❌ Error with letter {i}")
     
     # Contact Information
     messages.append((

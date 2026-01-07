@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 async def post_init(application: Application) -> None:
     """Start scheduler after application initialization."""
     asyncio.create_task(schedule_daily_alerts())
-    logger.info("📅 Daily subscription alerts scheduler started (9 AM)")
+    logger.info("📅 Daily subscription alerts scheduler started (8 AM)")
 
 
 def main():
