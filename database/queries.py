@@ -365,26 +365,16 @@ async def log_purchase(
     currency: str = "TND",
     payment_method: str = None,
     transaction_id: str = None,
-    notes: str = None
+    notes: str = None,
+    applicant_id: int = None
 ) -> bool:
-    """
-    Log a purchase to purchase_history table.
-    
-    Args:
-        alias_email: Applicant's alias email
-        whatsapp: Applicant's WhatsApp number
-        plan: Application plan (Casual, Normal, Intense)
-        amount: Payment amount
-        currency: Currency code
-        payment_method: Payment method used
-        transaction_id: Transaction ID from payment processor
-        notes: Additional notes
-        
-    Returns:
-        True if successful
-    """
+    """Log a purchase to purchase_history table."""
     try:
+        logger.info(f"=== LOGGING PURCHASE ===")
+        logger.info(f"Email: {alias_email}, Plan: {plan}, Amount: {amount}")
+        
         purchase_data = {
+            "applicant_id": applicant_id,
             "alias_email": alias_email,
             "whatsapp": whatsapp,
             "plan": plan,
@@ -398,15 +388,18 @@ async def log_purchase(
         # Remove None values
         purchase_data = {k: v for k, v in purchase_data.items() if v is not None}
         
+        logger.info(f"Purchase data to insert: {purchase_data}")
+        
         result = await asyncio.to_thread(
             lambda: supabase.table("purchase_history")
             .insert(purchase_data)
             .execute()
         )
         
-        logger.info(f"Purchase logged for {alias_email}: {plan}")
+        logger.info(f"Purchase logged successfully: {result.data}")
         return True
         
     except Exception as e:
         logger.error(f"Error logging purchase: {e}", exc_info=True)
         return False
+    

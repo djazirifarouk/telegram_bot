@@ -362,6 +362,9 @@ async def handle_mark_done_action(update: Update, text: str):
     user_id = update.message.from_user.id
     
     try:
+        from utils.helpers import resolve_lookup
+        from database.queries import get_applicant, update_applicant, log_purchase
+        
         field, value = resolve_lookup(text)
         
         # Get applicant info first
@@ -379,13 +382,22 @@ async def handle_mark_done_action(update: Update, text: str):
         
         if success:
             # Log purchase to history
-            from database.queries import log_purchase
-            await log_purchase(
-                alias_email=applicant.get('alias_email'),
-                whatsapp=applicant.get('whatsapp'),
+            logger.info(f"Logging purchase for {applicant.get('alias_email')}")
+            
+            purchase_logged = await log_purchase(
+                applicant_id = applicant.get('id'),
+                alias_email=applicant.get('alias_email', ''),
+                whatsapp=applicant.get('whatsapp', ''),
                 plan=applicant.get('application_plan', 'Unknown'),
+                amount=None,  # You can add amount if you have it
+                currency='TND',
                 notes=f"Payment marked as done by admin"
             )
+            
+            if purchase_logged:
+                logger.info(f"✅ Purchase logged successfully")
+            else:
+                logger.error(f"❌ Failed to log purchase")
             
             await update.message.reply_text(
                 f"✅ Payment marked as *done* for:\n`{text}`\n\n"
